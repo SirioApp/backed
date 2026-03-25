@@ -1,0 +1,40 @@
+[profile.default]
+src = "src"
+out = "out"
+libs = ["lib"]
+optimizer = true
+optimizer_runs = 1
+solc_version = "0.8.28"
+via_ir = true
+remappings = [
+    "@openzeppelin/=lib/openzeppelin-contracts/",
+    "forge-std/=lib/forge-std/src/"
+]
+
+# Size-optimized profile for MegaETH deployment
+[profile.size]
+src = "src"
+out = "out"
+libs = ["lib"]
+optimizer = true
+optimizer_runs = 1
+solc_version = "0.8.28"
+via_ir = true
+remappings = [
+    "@openzeppelin/=lib/openzeppelin-contracts/",
+    "forge-std/=lib/forge-std/src/"
+]
+
+[fmt]
+line_length = 100
+
+# MegaETH Testnet profile - requires ~50x gas estimate
+# Usage: FOUNDRY_PROFILE=megaeth forge script ... --gas-estimate-multiplier 5000
+[profile.megaeth]
+gas_limit = 200000000
+gas_price = 10000000
+code_size_limit = 100000
+
+[rpc_endpoints]
+megaeth-testnet = "https://carrot.megaeth.com/rpc"
+megaeth-mainnet = "https://mainnet.megaeth.com/rpc"

@@ -1,0 +1,11 @@
+{
+  "name": "sirio-backend",
+  "version": "1.0.0",
+  "scripts": {
+    "build": "forge build"
+  },
+  "dependencies": {
+    "ethers": "^6.13.4",
+    "lightweight-charts": "^5.1.0"
+  }
+}
