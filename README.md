@@ -1,43 +1,70 @@
-# Sirio Backend Contracts
+# Backed / Sirio Backend Contracts
 
-Last updated: `2026-03-25`
+Smart contracts for the agent raise stack: identity-gated project creation, time-bounded fundraising, fixed-supply vault capitalization, and policy-constrained treasury execution on MegaETH.
 
-Smart contract backend for the Sirio agent raise stack on MegaETH.
+This repository is the onchain backend for the current raise flow. It does **not** try to be a full governance system or a generic treasury framework. Its scope is narrower and more explicit:
 
-## Overview
+- create a project from an agent identity
+- raise ERC-20 collateral during a scheduled sale window
+- convert accepted capital into fixed-supply vault shares
+- operate treasury funds through a Safe module constrained by target and selector policy
 
-This repository contains the contracts required to:
+## What This System Does
 
-- create agent fundraising projects
-- run time-bounded ERC-20 collateral sales
-- mint fixed-supply vault shares (ERC-4626)
-- execute treasury operations through a controlled Safe module
-- manage execution allowlists and optional DEX metadata
+At a high level, one factory call creates a full project envelope:
 
-Legacy futarchy/governance flows are intentionally out of scope for this codebase version.
+1. a Safe treasury
+2. a `Sale` contract
+3. an `AgentExecutor` Safe module
 
-## Technology
+After that:
+
+1. the platform admin explicitly approves the raise
+2. investors commit collateral during the active window
+3. anyone can finalize once the sale ends
+4. success bootstraps an `AgentVaultToken`
+5. failure enables refunds
+6. post-raise treasury actions run through the executor under an allowlist and selector policy
+
+The design intentionally separates:
+
+- project origination
+- fundraising
+- investor settlement
+- treasury operation
+
+That separation is one of the main safety properties of the stack.
+
+## Stack
 
 - Solidity: `0.8.28`
-- Framework: Foundry (`forge`)
-- Dependencies: vendored OpenZeppelin (`lib/openzeppelin-contracts`)
+- Framework: Foundry
+- Primary dependency: OpenZeppelin contracts
+- Deployment target: MegaETH
+- Source directory: `src/`
 
-## Contract Architecture
+## Architecture
 
 ```mermaid
 flowchart TD
-    IR["ERC-8004 Identity Registry"] --> ARF["AgentRaiseFactory"]
-    ARF --> SAFE["Safe Treasury"]
-    ARF --> SALE["Sale"]
-    ARF --> EXEC["AgentExecutor (Safe Module)"]
-    ARF --> AL["ContractAllowlist"]
+    Creator["Project Creator"] --> Factory["AgentRaiseFactory"]
+    Admin["Admin"] --> Factory
+    Admin --> Allowlist["ContractAllowlist"]
+    Admin --> Executor["AgentExecutor"]
 
-    SALE --> AVT["AgentVaultToken (ERC-4626)"]
-    COL["Collateral ERC-20"] --> SALE
-    COL --> AVT
+    Identity["ERC-8004 Identity Registry"] --> Factory
+    Factory --> Safe["Safe Treasury"]
+    Factory --> Sale["Sale"]
+    Factory --> Executor
 
-    EXEC --> SAFE
-    EXEC --> AL
+    Investor["Investor"] --> Sale
+    Collateral["Collateral ERC-20"] --> Sale
+    Sale --> Vault["AgentVaultToken"]
+
+    Operator["Agent Operator"] --> Executor
+    Executor --> Safe
+    Executor --> Vault
+    Executor --> Collateral
 ```
 
 ## Core Contracts
@@ -45,150 +72,328 @@ flowchart TD
 ### `AgentRaiseFactory`
 Path: `src/agents/AgentRaiseFactory.sol`
 
+This is the origination and governance entry point.
+
 Responsibilities:
 
-- verifies ERC-8004 ownership for `agentId`
-- deploys per-project Safe treasury, `Sale`, and `AgentExecutor`
-- manages global raise constraints and collateral allowlist
-- governs project approval lifecycle
+- verifies that the caller owns the `agentId`
+- validates creation parameters
+- deploys the Safe treasury, `Sale`, and `AgentExecutor`
+- wires the Safe module setup
+- stores project metadata and raise configuration
+- gates fundraising through explicit admin approval
 
-Key behaviors:
+Important behaviors:
 
-- global raise limits are normalized to 18 decimals and scaled per collateral decimals
-- only admin-enabled collateral tokens can be used at project creation
-- project approval is mandatory before commitments are accepted
+- raise bounds are stored in normalized 18 decimals and scaled to the collateral token decimals
+- unsupported collateral is rejected at creation time
+- project approval gates `Sale.commit(...)`, but revoking approval does not unwind already committed capital
+- `updateProjectOperationalStatus(...)` is callable by the stored project agent or admin, not by a fresh `ownerOf(agentId)` lookup
 
 ### `Sale`
 Path: `src/launch/Sale.sol`
 
+This is the fundraising state machine.
+
 Responsibilities:
 
-- accepts commitments during `[startTime, endTime)`
+- accepts collateral commitments during the active sale window
 - finalizes permissionlessly after `endTime`
-- deploys and bootstraps `AgentVaultToken` on successful completion
-- supports `claim`, `refund`, and admin `emergencyRefund`
+- resolves success vs failure
+- deploys and bootstraps `AgentVaultToken` on success
+- handles `claim()`, `refund()`, and `emergencyRefund()`
 
-Key behaviors:
+Important behaviors:
 
-- accepted amount is capped at `MAX_RAISE`
-- commit accounting uses actual net received collateral
-- over-subscription refunds are bounded by tracked overflow
+- `commit(...)` requires project approval and exact collateral transfer behavior
+- `acceptedAmount` is capped at `MAX_RAISE`
+- oversubscription is resolved during `claim()`, not during `commit()`
+- the final claimer receives residual accounting to avoid trapped rounding dust
 
 ### `AgentVaultToken`
 Path: `src/token/AgentVaultToken.sol`
 
+This is the post-raise ownership token.
+
 Responsibilities:
 
 - represents project ownership via fixed-supply ERC-4626 shares
-- mints once through `bootstrap` (sale-only)
-- disables user `deposit` and `mint`
-- supports profit distribution from treasury with platform fee split
+- is bootstrapped once by the sale
+- disables user `deposit()` and `mint()`
+- accepts treasury profit distributions through `distributeProfits(...)`
+
+Important behaviors:
+
+- fixed supply is minted only once during bootstrap
+- investor upside comes from asset accretion, not future share minting
+- platform fees are applied during `distributeProfits(...)`, not during initial bootstrap
 
 ### `AgentExecutor`
 Path: `src/agents/AgentExecutor.sol`
 
+This is the treasury execution boundary.
+
 Responsibilities:
 
-- Safe module callable only by immutable `AGENT`
-- executes calls from treasury using `Call` operation only
-- blocks self-referential critical targets (`TREASURY`, module, allowlist)
+- acts as a Safe module
+- allows only the immutable `AGENT` address to trigger execution
+- enforces policy on targets, selectors, and approval recipients
 
-Key behaviors:
+Important behaviors:
 
-- admin can toggle `allowlistEnforced`
-- when enforced: only allowlisted targets are executable
-- when disabled: agent can call any target except blocked critical targets
+- hard-blocks `TREASURY`, the executor itself, and the allowlist contract as targets
+- forwards only `Call`, never `DelegateCall`
+- when `allowlistEnforced == true`, both target and selector must be approved
+- approval-like selectors also require the spender or operator to be allowlisted
+- when `allowlistEnforced == false`, all those checks are bypassed except the three hard-blocked targets
 
 ### `ContractAllowlist`
 Path: `src/registry/ContractAllowlist.sol`
 
-- admin-managed target allowlist
-- single and batch add/remove operations
-- admin transfer support
+This is a shared target registry used by executors when allowlist enforcement is enabled.
 
-### `DexRegistry` (optional)
-Path: `src/registry/DexRegistry.sol`
+Responsibilities:
 
-- admin-managed registry of DEX endpoints
-- not part of the critical raise lifecycle
+- add and remove allowed targets
+- batch add and batch remove targets
+- transfer allowlist admin
+
+Important note:
+
+- this contract stores target allowlisting only
+- selector policy is stored per `AgentExecutor`
 
 ### `SafeModuleSetup`
 Path: `src/safe/SafeModuleSetup.sol`
 
-- helper contract used during Safe setup to enable modules
+This is a helper used during Safe initialization to enable modules.
 
-## Repository Structure
+### `DexRegistry`
+Path: `src/registry/DexRegistry.sol`
 
-- `src/` contract sources
-- `test/` unit and E2E tests
-- `script/` deployment/operations scripts
-- `deployments/` network artifacts
-- `docs/` operational and integration documentation
+This is an auxiliary admin registry for DEX endpoint metadata. It is not part of the critical raise lifecycle.
 
-## Lifecycle
+## Roles
 
-1. Agent owner creates project via `createAgentRaise`.
-2. Admin approves project via `approveProject`.
-3. Investors commit collateral via `commit`.
-4. Anyone finalizes sale via `finalize` after end time.
-5. If successful, investors redeem via `claim`.
-6. If failed or emergency-terminated, investors recover via `refund`.
-7. Post-sale treasury operations are executed via `AgentExecutor`.
+### Project Creator
+
+- must own the supplied `agentId`
+- calls `createAgentRaise(...)`
+- becomes the stored `project.agent`
+- may update project operational status
+
+### Agent Operator
+
+- is provided as `agentAddress` during project creation
+- is the only caller allowed to use `AgentExecutor.execute(...)`
+
+### Factory Admin
+
+- approves or revokes projects
+- changes global config
+- changes allowed collateral
+- updates project metadata
+- is the `SUPER_ADMIN()` seen by `Sale`
+
+### Executor Admin
+
+- toggles allowlist enforcement
+- configures allowed selectors per target
+
+### Allowlist Admin
+
+- manages globally allowed targets in `ContractAllowlist`
+
+### Investor
+
+- commits collateral
+- can finalize after sale end
+- claims shares on success
+- refunds on failure
+
+## End-to-End Lifecycle
+
+### 1. Identity-gated creation
+
+Project creation begins at:
+
+```solidity
+createAgentRaise(
+    agentId,
+    name,
+    description,
+    categories,
+    agentAddress,
+    collateral,
+    duration,
+    launchTime,
+    tokenName,
+    tokenSymbol
+)
+```
+
+The factory checks:
+
+- `IDENTITY_REGISTRY.ownerOf(agentId) == msg.sender`
+- non-empty `name`
+- non-zero `agentAddress`
+- supported collateral
+- valid duration
+- valid launch timing
+- valid scaled min/max raise after applying collateral decimals
+
+### 2. Atomic deployment
+
+On success, the factory:
+
+1. creates a Safe treasury
+2. deploys `Sale`
+3. deploys `AgentExecutor`
+4. enables the executor as a Safe module
+5. removes itself from the Safe module list
+6. stores the project
+
+### 3. Approval-gated fundraising
+
+The sale is not immediately investable.
+
+Investors can only commit after:
+
+- the project has been approved
+- `startTime` has arrived
+- `endTime` has not passed
+- the sale is not finalized
+
+### 4. Finalization
+
+After `endTime`, anyone can call `finalize()`.
+
+Possible outcomes:
+
+- no commitments: failed
+- commitments below `MIN_RAISE`: failed
+- commitments at or above `MIN_RAISE`: success
+
+On success:
+
+- accepted capital is capped at `MAX_RAISE`
+- `AgentVaultToken` is deployed
+- accepted collateral is bootstrapped into the vault
+- fixed shares are minted to the sale contract
+
+### 5. Investor settlement
+
+After finalization:
+
+- success path: investors call `claim()`
+- failure path: investors call `refund()`
+
+There is also an admin emergency path:
+
+- `emergencyRefund()`
+
+### 6. Post-raise treasury operation
+
+After successful finalization:
+
+- admin configures target and selector policy
+- operator calls `AgentExecutor.execute(...)`
+- Safe funds move only through the module path
 
 ## Security Model
 
-Trust assumptions:
+This system is not trustless. It is a constrained-authority design.
 
-- `ADMIN` is trusted for project approval, configuration, collateral policy, and emergency controls.
-- `AGENT` is trusted for treasury operations through `AgentExecutor`.
-- Safe owner model and key management remain critical operational controls.
+### Main trust assumptions
 
-Security controls:
+- the identity registry is trusted as the source of creation authority
+- the admin is trusted for raise admission, emergency controls, and treasury policy configuration
+- the operator is trusted to use approved treasury actions correctly
+- the Safe deployment and module wiring must be correct
 
-- explicit role checks and custom errors
-- reentrancy protection on state-changing sale and executor paths
-- blocked critical targets in executor to limit privilege escalation vectors
-- bounded refund accounting in oversubscribed sales
+### Main control points
 
-## Build and Test
+- strict caller checks on privileged functions
+- reentrancy protection on `Sale` and `AgentExecutor` state-changing entry points
+- hard-blocked treasury self-targeting in `AgentExecutor`
+- exact-transfer checks for collateral-sensitive flows
+- bounded oversubscription refund accounting
 
-From repository root:
+### Main known risk areas
+
+- `Sale` accounting and settlement logic
+- executor break-glass mode via `setAllowlistEnforced(false)`
+- privileged operations with no in-code timelock
+- assumptions about collateral token behavior
+
+## Repository Layout
+
+- `src/` protocol contracts
+- `test/` unit and end-to-end tests
+- `script/` deployment and operational scripts
+- `docs/` supporting operational documentation
+- `deployments/` deployment artifacts
+- `x-ray/` generated audit-readiness and architecture outputs
+
+## Key Scripts
+
+Current scripts:
+
+- `script/DeployFactoryStackTestnet.s.sol`
+- `script/DeployNewAgentRaiseFactory.s.sol`
+- `script/DeployDexRegistry.s.sol`
+- `script/DeployTestnetStackAndRaise.s.sol`
+- `script/RegisterAgent.s.sol`
+
+## Build
+
+From the repository root:
 
 ```bash
 cd backend
 forge build
+```
+
+## Test
+
+Typical commands:
+
+```bash
+cd backend
 forge test
 forge test --fuzz-runs 1000 -q
 forge fmt --check
 ```
 
-Current local status:
+Based on the current x-ray scan, the repository contains:
 
-- test suites: `9`
-- total tests: `126`
-- result: all passing
+- `15` test files
+- `136` test functions
+
+What is currently missing from the codebase quality posture:
+
+- stateless fuzz coverage
+- stateful invariant testing
+- formal verification artifacts
 
 ## Deployment
 
-### Prerequisites
+For detailed deployment instructions, see:
 
-Required:
+- `docs/DEPLOY.md`
+- `docs/CREATE_AGENT.md`
+- `docs/AGENT_CREATION_GUIDE.md`
 
-- `PRIVATE_KEY`
-
-Optional (script-dependent):
-
-- `AGENT_URI`
-- additional script env vars documented in `script/*.s.sol`
-
-### RPC Endpoints
+### Network endpoints
 
 Defined in `foundry.toml`:
 
 - `megaeth-testnet = https://carrot.megaeth.com/rpc`
 - `megaeth-mainnet = https://mainnet.megaeth.com/rpc`
 
-### Factory Stack (Testnet)
+### Common deployment commands
+
+Deploy testnet factory stack:
 
 ```bash
 cd backend
@@ -200,7 +405,7 @@ NO_PROXY="*" forge script script/DeployFactoryStackTestnet.s.sol:DeployFactorySt
   -vvv
 ```
 
-### Factory Refresh (Mainnet)
+Refresh mainnet factory:
 
 ```bash
 cd backend
@@ -212,19 +417,7 @@ NO_PROXY="*" forge script script/DeployNewAgentRaiseFactory.s.sol:DeployNewAgent
   -vvv
 ```
 
-### DEX Registry (Mainnet)
-
-```bash
-cd backend
-NO_PROXY="*" forge script script/DeployDexRegistry.s.sol:DeployDexRegistry \
-  --rpc-url megaeth-mainnet \
-  --broadcast \
-  --gas-estimate-multiplier 5000 \
-  --code-size-limit 100000 \
-  -vvv
-```
-
-### Agent Registration (ERC-8004)
+Register an agent identity:
 
 ```bash
 cd backend
@@ -235,34 +428,96 @@ NO_PROXY="*" forge script script/RegisterAgent.s.sol:RegisterAgent \
   -vvv
 ```
 
-## Deployments
+## Integration Surfaces
 
-Deployment artifacts are the source of truth for integration:
+Most integrations only need a small subset of methods.
 
-- `deployments/megaeth-testnet.json`
-- `deployments/megaeth-mainnet.json`
+### Factory reads
 
-Current artifact snapshots:
+- `projectCount()`
+- `getProject(projectId)`
+- `getProjectRaiseSnapshot(projectId)`
+- `getProjectCommitment(projectId, user)`
+- `globalConfig()`
+- `minRaiseForCollateral(collateral)`
+- `maxRaiseForCollateral(collateral)`
 
-- testnet: `version = v20-agentraise-profit-fee-testnet`, `deployedAt = 2026-02-28`
-- mainnet: `version = v2-agentraise-collateral-config`, `deployedAt = 2026-02-22`
+### Sale reads
 
-## Operations and Troubleshooting
+- `getStatus()`
+- `isActive()`
+- `timeRemaining()`
+- `getClaimable(user)`
+- `getRefundable(user)`
+- `token()`
 
-Common `createAgentRaise` failure reasons:
+### Treasury policy reads
 
-- caller does not own `agentId`
-- `launchTime` in the past or outside launch-delay bounds
-- `duration` outside configured range
-- collateral is not enabled in factory
+- `allowlistEnforced()`
+- `isSelectorAllowed(target, selector)`
+- `ContractAllowlist.isAllowed(target)`
 
-Common `commit` failure reasons:
+## Operational Notes
+
+### Common creation failures
+
+- caller is not the current owner of `agentId`
+- unsupported collateral
+- invalid duration
+- invalid launch time
+- invalid scaled min/max config after decimal conversion
+
+### Common commitment failures
 
 - project not approved
 - sale not active
 - sale already finalized
+- zero amount
+- collateral transfer did not match the requested amount
 
-Operational recommendation:
+### Common treasury execution failures
 
-- enforce CI gates on `forge test`, fuzz runs, and formatting
-- run static analysis (for example Slither) in a dedicated security pipeline
+- caller is not the configured `AGENT`
+- target is not allowed
+- selector is not allowed
+- approval recipient is not allowed
+- Safe execution failed downstream
+
+## Audit Readiness Snapshot
+
+The latest x-ray output in `x-ray/` classifies the codebase as:
+
+**FRAGILE**
+
+Why:
+
+- compact codebase, but concentrated complexity in `AgentRaiseFactory`, `Sale`, and `AgentExecutor`
+- single-developer git history
+- no visible merge-based review flow
+- no fuzz, invariant, or formal verification artifacts
+- privileged operational powers execute immediately
+
+Priority review areas:
+
+1. `src/launch/Sale.sol`
+2. `src/agents/AgentExecutor.sol`
+3. `src/token/AgentVaultToken.sol`
+4. `src/agents/AgentRaiseFactory.sol`
+
+## Recommended Next Hardening Steps
+
+- add invariant tests for raise lifecycle closure
+- add fuzz tests for oversubscription, rounding, and profit distribution
+- harden or narrow the executor break-glass path
+- evaluate timelock or multisig control for admin-operated surfaces
+- document collateral assumptions explicitly for integrators
+
+## Additional References
+
+- `docs/DEPLOY.md`
+- `docs/DEBUG_AGENT_RAISE.md`
+- `docs/CREATE_AGENT.md`
+- `docs/AGENT_CREATION_GUIDE.md`
+- `docs/SMART_CONTRACT_FLOW.typ`
+- `x-ray/x-ray.md`
+- `x-ray/entry-points.md`
