@@ -30,11 +30,13 @@ contract DeployDexRegistry is Script {
         console.log("DexRegistry:", address(registry));
 
         // 2. Register PrismFi (dexId 0)
-        uint256 prismFiId = registry.addDex(PRISMFI_V3_FACTORY, PRISMFI_POSITION_MANAGER, PRISMFI_SWAP_ROUTER);
+        uint256 prismFiId =
+            registry.addDex(PRISMFI_V3_FACTORY, PRISMFI_POSITION_MANAGER, PRISMFI_SWAP_ROUTER);
         console.log("PrismFi dexId:", prismFiId);
 
         // 3. Register Kumbaya (dexId 1)
-        uint256 kumbayaId = registry.addDex(KUMBAYA_V3_FACTORY, KUMBAYA_POSITION_MANAGER, KUMBAYA_SWAP_ROUTER);
+        uint256 kumbayaId =
+            registry.addDex(KUMBAYA_V3_FACTORY, KUMBAYA_POSITION_MANAGER, KUMBAYA_SWAP_ROUTER);
         console.log("Kumbaya dexId:", kumbayaId);
 
         vm.stopBroadcast();

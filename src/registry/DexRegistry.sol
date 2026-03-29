@@ -9,19 +9,23 @@ contract DexRegistry is IDexRegistry {
     mapping(uint256 => DexConfig) internal _dexes;
 
     modifier onlyAdmin() {
-        if (msg.sender != ADMIN) revert Unauthorized();
+        _onlyAdmin();
         _;
+    }
+
+    function _onlyAdmin() internal view {
+        if (msg.sender != ADMIN) revert Unauthorized();
     }
 
     constructor() {
         ADMIN = msg.sender;
     }
 
-    function addDex(
-        address v3Factory,
-        address positionManager,
-        address swapRouter
-    ) external onlyAdmin returns (uint256 dexId) {
+    function addDex(address v3Factory, address positionManager, address swapRouter)
+        external
+        onlyAdmin
+        returns (uint256 dexId)
+    {
         if (v3Factory == address(0)) revert InvalidAddress();
         if (positionManager == address(0)) revert InvalidAddress();
         if (swapRouter == address(0)) revert InvalidAddress();

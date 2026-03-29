@@ -108,6 +108,10 @@ contract AgentRaiseE2ETest is Test {
         vm.startPrank(admin);
         allowlist.addContract(address(collateral));
         allowlist.addContract(vaultAddr);
+        executor.setSelectorAllowed(
+            address(collateral), bytes4(keccak256("approve(address,uint256)")), true
+        );
+        executor.setSelectorAllowed(vaultAddr, AgentVaultToken.distributeProfits.selector, true);
         vm.stopPrank();
 
         uint256 grossProfit = 1_000e18;
@@ -131,6 +135,16 @@ contract AgentRaiseE2ETest is Test {
         sale.claim();
         vm.prank(investor2);
         sale.claim();
+
+        uint256 user1Shares = vault.balanceOf(investor1);
+        uint256 user2Shares = vault.balanceOf(investor2);
+        assertEq(user1Shares, 6_000e18);
+        assertEq(user2Shares, 4_000e18);
+
+        vm.prank(investor1);
+        vault.redeem(user1Shares, investor1, investor1);
+        vm.prank(investor2);
+        vault.redeem(user2Shares, investor2, investor2);
 
         assertEq(collateral.balanceOf(investor1) - user1Before, 3_570e18);
         assertEq(collateral.balanceOf(investor2) - user2Before, 2_380e18);
@@ -209,5 +223,85 @@ contract AgentRaiseE2ETest is Test {
         vm.prank(agentOperator);
         vm.expectRevert(AgentExecutor.TargetNotAllowed.selector);
         executor.execute(address(target), 0, abi.encodeWithSelector(ExecutorTarget.touch.selector));
+    }
+
+    function test_E2E_EarlyClaimerStillKeepsProRataUpsideAfterDistribution() public {
+        uint256 launchTime = block.timestamp + 1 days;
+        vm.prank(agentOwner);
+        uint256 projectId = factory.createAgentRaise(
+            1,
+            "Agent Project",
+            "claim fairness flow",
+            "defi,ai",
+            agentOperator,
+            address(collateral),
+            SALE_DURATION,
+            launchTime,
+            "Agent Vault",
+            "AGV"
+        );
+        vm.prank(admin);
+        factory.approveProject(projectId);
+
+        AgentRaiseFactory.AgentProject memory p = factory.getProject(projectId);
+        Sale sale = Sale(p.sale);
+        AgentExecutor executor = AgentExecutor(p.agentExecutor);
+
+        vm.warp(launchTime + 1);
+        vm.startPrank(investor1);
+        collateral.approve(address(sale), 3_000e18);
+        sale.commit(3_000e18);
+        vm.stopPrank();
+
+        vm.startPrank(investor2);
+        collateral.approve(address(sale), 3_000e18);
+        sale.commit(3_000e18);
+        vm.stopPrank();
+
+        vm.warp(launchTime + SALE_DURATION + 1);
+        sale.finalize();
+        AgentVaultToken vault = AgentVaultToken(sale.token());
+
+        vm.prank(investor1);
+        sale.claim(); // claims shares early
+        uint256 user1Shares = vault.balanceOf(investor1);
+        assertEq(user1Shares, 5_000e18);
+
+        vm.startPrank(admin);
+        allowlist.addContract(address(collateral));
+        allowlist.addContract(address(vault));
+        executor.setSelectorAllowed(
+            address(collateral), bytes4(keccak256("approve(address,uint256)")), true
+        );
+        executor.setSelectorAllowed(
+            address(vault), AgentVaultToken.distributeProfits.selector, true
+        );
+        vm.stopPrank();
+
+        uint256 grossProfit = 1_000e18;
+        collateral.mint(p.treasury, grossProfit);
+        bytes memory approveCall =
+            abi.encodeWithSignature("approve(address,uint256)", address(vault), grossProfit);
+        vm.prank(agentOperator);
+        executor.execute(address(collateral), 0, approveCall);
+        bytes memory distributeCall =
+            abi.encodeWithSelector(AgentVaultToken.distributeProfits.selector, grossProfit);
+        vm.prank(agentOperator);
+        executor.execute(address(vault), 0, distributeCall);
+
+        vm.prank(investor2);
+        sale.claim(); // claims shares late
+        uint256 user2Shares = vault.balanceOf(investor2);
+        assertEq(user2Shares, 5_000e18);
+
+        uint256 user1BeforeRedeem = collateral.balanceOf(investor1);
+        uint256 user2BeforeRedeem = collateral.balanceOf(investor2);
+        vm.prank(investor1);
+        vault.redeem(user1Shares, investor1, investor1);
+        vm.prank(investor2);
+        vault.redeem(user2Shares, investor2, investor2);
+
+        assertEq(collateral.balanceOf(investor1) - user1BeforeRedeem, 3_475e18);
+        assertEq(collateral.balanceOf(investor2) - user2BeforeRedeem, 3_475e18);
     }
 }

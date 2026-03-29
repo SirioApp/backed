@@ -225,7 +225,7 @@ contract SaleTest is Test {
             ISale.SaleConfigSnapshot({
                 minRaise: MIN_RAISE,
                 maxRaise: MAX_RAISE,
-                platformFeeBps: uint16(BPS),
+                platformFeeBps: 10_000,
                 platformFeeRecipient: feeRecipient
             }),
             9
@@ -364,7 +364,7 @@ contract SaleTest is Test {
         assertEq(sale.totalSharesMinted(), TOKEN_FIXED_SUPPLY);
     }
 
-    function test_Claim_PaysOutInUsdmAndRefundsExcess() public {
+    function test_Claim_DistributesSharesAndRefundsExcess() public {
         vm.warp(block.timestamp + 1 days);
 
         vm.startPrank(user1);
@@ -385,7 +385,7 @@ contract SaleTest is Test {
         sale.claim();
         uint256 user1Delta = collateral.balanceOf(user1) - user1UsdmBefore;
         assertGt(user1Delta, 0);
-        assertEq(IERC20(sale.token()).balanceOf(user1), 0);
+        assertGt(IERC20(sale.token()).balanceOf(user1), 0);
     }
 
     function test_Claim_RevertsAlreadyClaimed() public {
@@ -421,7 +421,7 @@ contract SaleTest is Test {
         sale.claim();
     }
 
-    function test_GetClaimable_ReturnsUsdmPayoutAndRefund() public {
+    function test_GetClaimable_ReturnsSharesAndRefund() public {
         vm.warp(block.timestamp + 1 days);
         vm.startPrank(user1);
         collateral.approve(address(sale), 3_000e18);
@@ -431,8 +431,8 @@ contract SaleTest is Test {
         vm.warp(block.timestamp + SALE_DURATION);
         sale.finalize();
 
-        (uint256 payoutUsdm, uint256 refundAmt) = sale.getClaimable(user1);
-        assertGt(payoutUsdm, 0);
+        (uint256 payoutShares, uint256 refundAmt) = sale.getClaimable(user1);
+        assertGt(payoutShares, 0);
         assertEq(refundAmt, 0);
     }
 
@@ -558,13 +558,12 @@ contract SaleTest is Test {
 }
 
 contract FeeOnTransferERC20 is MockERC20 {
-    uint16 public immutable feeBps;
-    uint256 internal constant BPS = 10_000;
+    uint16 public immutable FEE_BPS;
 
     constructor(string memory name_, string memory symbol_, uint8 decimals_, uint16 feeBps_)
         MockERC20(name_, symbol_, decimals_)
     {
-        feeBps = feeBps_;
+        FEE_BPS = feeBps_;
     }
 
     function transfer(address to, uint256 amount) public override returns (bool) {
@@ -583,7 +582,7 @@ contract FeeOnTransferERC20 is MockERC20 {
     }
 
     function _transferWithFee(address from, address to, uint256 amount) internal {
-        uint256 fee = (amount * feeBps) / BPS;
+        uint256 fee = (amount * FEE_BPS) / BPS;
         uint256 received = amount - fee;
         super._transfer(from, to, received);
         if (fee > 0) {
@@ -630,17 +629,13 @@ contract SaleFeeOnTransferTest is Test {
         collateral.mint(user, 1_000e18);
     }
 
-    function test_Commit_TracksReceivedAmount_NotNominalAmount() public {
+    function test_Commit_RevertsOnTransferTaxCollateral() public {
         vm.warp(block.timestamp + 1 days);
         vm.startPrank(user);
         collateral.approve(address(sale), 1_000e18);
+        vm.expectRevert(Sale.InvalidCollateralBehavior.selector);
         sale.commit(1_000e18);
         vm.stopPrank();
-
-        // 1% fee => 990e18 received by Sale
-        assertEq(sale.commitments(user), 990e18);
-        assertEq(sale.totalCommitted(), 990e18);
-        assertEq(collateral.balanceOf(address(sale)), 990e18);
     }
 
     function test_Commit_RevertsWhenNetReceivedIsZero() public {

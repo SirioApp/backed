@@ -42,6 +42,7 @@ contract AgentVaultToken is ERC4626 {
     error OnlySale();
     error OnlyTreasury();
     error SaleAlreadyCompleted();
+    error InvalidAssetBehavior();
 
     /// @param asset_   The underlying ERC-20 collateral token.
     /// @param sale_    The Sale contract authorised to deposit during the raise.
@@ -56,7 +57,9 @@ contract AgentVaultToken is ERC4626 {
         string memory name_,
         string memory symbol_
     ) ERC4626(IERC20(asset_)) ERC20(name_, symbol_) {
-        if (asset_ == address(0) || sale_ == address(0)) revert InvalidAddress();
+        if (asset_ == address(0) || sale_ == address(0)) {
+            revert InvalidAddress();
+        }
         if (treasury_ == address(0)) revert InvalidAddress();
         if (platformFeeRecipient_ == address(0)) revert InvalidAddress();
         if (platformFeeBps_ >= BPS) revert InvalidAmount();
@@ -72,7 +75,10 @@ contract AgentVaultToken is ERC4626 {
         if (bootstrapped) revert AlreadyBootstrapped();
         if (assets == 0 || receiver == address(0)) revert InvalidAmount();
 
+        uint256 balanceBefore = IERC20(asset()).balanceOf(address(this));
         IERC20(asset()).safeTransferFrom(msg.sender, address(this), assets);
+        uint256 received = IERC20(asset()).balanceOf(address(this)) - balanceBefore;
+        if (received != assets) revert InvalidAssetBehavior();
         shares = TOKEN_FIXED_SUPPLY;
         _mint(receiver, shares);
         bootstrapped = true;
@@ -97,11 +103,18 @@ contract AgentVaultToken is ERC4626 {
 
         uint256 feeAmount = (grossAmount * PLATFORM_FEE_BPS) / BPS;
         uint256 netAmount = grossAmount - feeAmount;
+        uint256 vaultBalanceBefore = IERC20(asset()).balanceOf(address(this));
 
         if (feeAmount > 0) {
+            uint256 recipientBalanceBefore = IERC20(asset()).balanceOf(PLATFORM_FEE_RECIPIENT);
             IERC20(asset()).safeTransferFrom(msg.sender, PLATFORM_FEE_RECIPIENT, feeAmount);
+            uint256 recipientReceived =
+                IERC20(asset()).balanceOf(PLATFORM_FEE_RECIPIENT) - recipientBalanceBefore;
+            if (recipientReceived != feeAmount) revert InvalidAssetBehavior();
         }
         IERC20(asset()).safeTransferFrom(msg.sender, address(this), netAmount);
+        uint256 vaultReceived = IERC20(asset()).balanceOf(address(this)) - vaultBalanceBefore;
+        if (vaultReceived != netAmount) revert InvalidAssetBehavior();
 
         emit ProfitsDistributed(grossAmount, feeAmount, netAmount);
     }

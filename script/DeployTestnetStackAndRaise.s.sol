@@ -28,8 +28,7 @@ contract DeployTestnetStackAndRaise is Script {
         string memory agentURI = vm.envString("AGENT_URI");
         string memory projectName = vm.envOr("PROJECT_NAME", string("Backed Test Agent"));
         string memory projectDescription = vm.envOr(
-            "PROJECT_DESCRIPTION",
-            string("Test raise for UI verification on MegaETH testnet.")
+            "PROJECT_DESCRIPTION", string("Test raise for UI verification on MegaETH testnet.")
         );
         string memory projectCategories = vm.envOr("PROJECT_CATEGORIES", string("defi,ai,testing"));
         string memory tokenName = vm.envOr("TOKEN_NAME", string("Backed Test Vault"));

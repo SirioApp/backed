@@ -13,7 +13,8 @@ contract SafeModuleSetup {
 
     function _enableModule(address module) internal {
         if (module == address(0) || module == address(0x1)) revert InvalidModule();
-        (bool success,) = address(this).call(abi.encodeWithSignature("enableModule(address)", module));
+        (bool success,) =
+            address(this).call(abi.encodeWithSignature("enableModule(address)", module));
         if (!success) revert ModuleEnableFailed();
     }
 }

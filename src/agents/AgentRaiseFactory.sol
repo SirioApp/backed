@@ -126,14 +126,22 @@ contract AgentRaiseFactory {
     error InvalidOperationalStatus();
 
     modifier onlyAdmin() {
-        if (msg.sender != ADMIN) revert Unauthorized();
+        _onlyAdmin();
         _;
     }
 
     modifier onlyProjectOperator(uint256 projectId) {
+        _onlyProjectOperator(projectId);
+        _;
+    }
+
+    function _onlyAdmin() internal view {
+        if (msg.sender != ADMIN) revert Unauthorized();
+    }
+
+    function _onlyProjectOperator(uint256 projectId) internal view {
         if (projectId >= _projects.length) revert ProjectNotFound();
         if (msg.sender != ADMIN && msg.sender != _projects[projectId].agent) revert Unauthorized();
-        _;
     }
 
     constructor(

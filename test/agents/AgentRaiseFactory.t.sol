@@ -10,7 +10,7 @@ import {ContractAllowlist} from "../../src/registry/ContractAllowlist.sol";
 import {MockIdentityRegistry} from "../mocks/MockIdentityRegistry.sol";
 import {MockSafeProxyFactory} from "../mocks/MockSafeProxyFactory.sol";
 import {MockERC20} from "../mocks/MockERC20.sol";
-import {USDM, BPS, DEFAULT_MAX_RAISE, DEFAULT_MIN_RAISE} from "../../src/Constants.sol";
+import {USDM, DEFAULT_MAX_RAISE, DEFAULT_MIN_RAISE} from "../../src/Constants.sol";
 
 contract AgentRaiseFactoryTest is Test {
     uint256 internal constant SALE_DURATION = 7 days;
@@ -419,7 +419,7 @@ contract AgentRaiseFactoryTest is Test {
         AgentRaiseFactory.GlobalConfig memory cfg = AgentRaiseFactory.GlobalConfig({
             minRaise: DEFAULT_MIN_RAISE,
             maxRaise: DEFAULT_MAX_RAISE,
-            platformFeeBps: uint16(BPS),
+            platformFeeBps: 10_000,
             platformFeeRecipient: address(0xBEEF),
             minDuration: 1 hours,
             maxDuration: 30 days,

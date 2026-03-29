@@ -47,6 +47,10 @@ contract Sale is ReentrancyGuard, ISale {
     uint256 public acceptedAmount;
     uint256 public totalSharesMinted;
     uint256 public totalRefundedAmount;
+    uint256 public participantCount;
+    uint256 public claimedCount;
+    uint256 public totalAcceptedClaimed;
+    uint256 public totalSharesClaimed;
     bool public finalized;
     bool public failed;
 
@@ -72,11 +76,16 @@ contract Sale is ReentrancyGuard, ISale {
     error RefundNotAvailable();
     error ZeroAmount();
     error InvalidCollateralTransfer();
+    error InvalidCollateralBehavior();
     error InvalidConfig();
 
     modifier onlyAdmin() {
-        if (msg.sender != FACTORY.SUPER_ADMIN()) revert Unauthorized();
+        _onlyAdmin();
         _;
+    }
+
+    function _onlyAdmin() internal view {
+        if (msg.sender != FACTORY.SUPER_ADMIN()) revert Unauthorized();
     }
 
     constructor(
@@ -130,7 +139,11 @@ contract Sale is ReentrancyGuard, ISale {
         COLLATERAL.safeTransferFrom(msg.sender, address(this), amount);
         uint256 received = COLLATERAL.balanceOf(address(this)) - balanceBefore;
         if (received == 0) revert InvalidCollateralTransfer();
+        if (received != amount) revert InvalidCollateralBehavior();
 
+        if (commitments[msg.sender] == 0) {
+            participantCount += 1;
+        }
         commitments[msg.sender] += received;
         totalCommitted += received;
 
@@ -179,11 +192,9 @@ contract Sale is ReentrancyGuard, ISale {
         emit Finalized(address(vault), acceptedAmount, shares);
     }
 
-    /// @notice Claim pro-rata payout in collateral after a successful finalization.
+    /// @notice Claim pro-rata vault shares after successful finalization.
     ///
-    /// Each investor receives: accepted principal (plus vault gains/losses) through
-    /// redeeming their pro-rata fixed shares into collateral, plus refund for over-commitment.
-    /// If totalCommitted > MAX_RAISE, the remaining collateral is refunded proportionally.
+    /// Each investor receives transfer of pro-rata vault shares and any overflow refund.
     function claim() external nonReentrant {
         if (!finalized || failed || acceptedAmount == 0) revert NotReady();
         if (claimed[msg.sender]) revert AlreadyClaimed();
@@ -193,15 +204,29 @@ contract Sale is ReentrancyGuard, ISale {
 
         claimed[msg.sender] = true;
 
-        uint256 accepted =
-            totalCommitted > MAX_RAISE ? (committed * acceptedAmount) / totalCommitted : committed;
-
-        uint256 shares = (accepted * totalSharesMinted) / acceptedAmount;
-        uint256 payoutUsdm;
-        uint256 refundAmt = committed - accepted;
-        if (shares > 0) {
-            payoutUsdm = AgentVaultToken(address(_token)).redeem(shares, msg.sender, address(this));
+        bool isLastClaimer = claimedCount + 1 == participantCount;
+        uint256 accepted;
+        if (isLastClaimer) {
+            accepted = acceptedAmount - totalAcceptedClaimed;
+        } else {
+            accepted = totalCommitted > MAX_RAISE
+                ? (committed * acceptedAmount) / totalCommitted
+                : committed;
         }
+        if (accepted > committed) accepted = committed;
+
+        uint256 shares = isLastClaimer
+            ? totalSharesMinted - totalSharesClaimed
+            : (accepted * totalSharesMinted) / acceptedAmount;
+        uint256 payoutShares = shares;
+        uint256 refundAmt = committed - accepted;
+        if (payoutShares > 0) {
+            _token.safeTransfer(msg.sender, payoutShares);
+        }
+
+        totalAcceptedClaimed += accepted;
+        totalSharesClaimed += payoutShares;
+        claimedCount += 1;
 
         if (refundAmt > 0) {
             uint256 overflow = totalCommitted - acceptedAmount;
@@ -213,7 +238,7 @@ contract Sale is ReentrancyGuard, ISale {
             }
         }
 
-        emit Claimed(msg.sender, payoutUsdm, refundAmt);
+        emit Claimed(msg.sender, payoutShares, refundAmt);
     }
 
     /// @notice Reclaim full collateral commitment when the sale failed.
@@ -244,19 +269,23 @@ contract Sale is ReentrancyGuard, ISale {
     function getClaimable(address user)
         external
         view
-        returns (uint256 payoutUsdm, uint256 refundAmt)
+        returns (uint256 payoutShares, uint256 refundAmt)
     {
         if (!finalized || failed || acceptedAmount == 0 || commitments[user] == 0 || claimed[user])
         {
             return (0, 0);
         }
         uint256 committed = commitments[user];
-        uint256 accepted =
-            totalCommitted > MAX_RAISE ? (committed * acceptedAmount) / totalCommitted : committed;
-        uint256 shares = (accepted * totalSharesMinted) / acceptedAmount;
-        if (shares > 0 && address(_token) != address(0)) {
-            payoutUsdm = AgentVaultToken(address(_token)).previewRedeem(shares);
-        }
+        bool isLastClaimer = claimedCount + 1 == participantCount;
+        uint256 accepted = isLastClaimer
+            ? acceptedAmount - totalAcceptedClaimed
+            : (totalCommitted > MAX_RAISE
+                    ? (committed * acceptedAmount) / totalCommitted
+                    : committed);
+        if (accepted > committed) accepted = committed;
+        payoutShares = isLastClaimer
+            ? totalSharesMinted - totalSharesClaimed
+            : (accepted * totalSharesMinted) / acceptedAmount;
         refundAmt = committed - accepted;
         if (refundAmt > 0) {
             uint256 overflow = totalCommitted - acceptedAmount;

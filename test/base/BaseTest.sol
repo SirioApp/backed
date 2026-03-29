@@ -41,9 +41,17 @@ abstract contract BaseTest is Test {
         usdm.mint(user3, INITIAL_BALANCE);
     }
 
-    function _skipTime(uint256 seconds_) internal { vm.warp(block.timestamp + seconds_); }
-    function _skipDays(uint256 days_) internal { vm.warp(block.timestamp + days_ * 1 days); }
-    function _setTimestamp(uint256 timestamp) internal { vm.warp(timestamp); }
+    function _skipTime(uint256 seconds_) internal {
+        vm.warp(block.timestamp + seconds_);
+    }
+
+    function _skipDays(uint256 days_) internal {
+        vm.warp(block.timestamp + days_ * 1 days);
+    }
+
+    function _setTimestamp(uint256 timestamp) internal {
+        vm.warp(timestamp);
+    }
 
     function _assertBalance(address token, address account, uint256 expected) internal view {
         assertEq(IERC20(token).balanceOf(account), expected, "Balance mismatch");

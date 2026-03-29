@@ -20,7 +20,10 @@ interface IERC8004IdentityRegistry {
     /// @param agentId The agent identity token ID.
     /// @param metadataKey The metadata key to query.
     /// @return value The ABI-encoded metadata value.
-    function getMetadata(uint256 agentId, bytes32 metadataKey) external view returns (bytes memory value);
+    function getMetadata(uint256 agentId, bytes32 metadataKey)
+        external
+        view
+        returns (bytes memory value);
 
     /// @notice Returns the verified wallet address for the agent.
     /// @param agentId The agent identity token ID.

@@ -27,23 +27,41 @@ contract AgentExecutor is ReentrancyGuard {
     address public immutable ADMIN;
     ContractAllowlist public immutable ALLOWLIST;
     bool public allowlistEnforced;
+    mapping(address => mapping(bytes4 => bool)) public isSelectorAllowed;
+
+    bytes4 internal constant APPROVE_SELECTOR = 0x095ea7b3;
+    bytes4 internal constant INCREASE_ALLOWANCE_SELECTOR = 0x39509351;
+    bytes4 internal constant DECREASE_ALLOWANCE_SELECTOR = 0xa457c2d7;
+    bytes4 internal constant SET_APPROVAL_FOR_ALL_SELECTOR = 0xa22cb465;
 
     event Executed(address indexed target, uint256 value, bytes data);
     event AllowlistEnforcementUpdated(bool enforced);
+    event SelectorPolicyUpdated(address indexed target, bytes4 indexed selector, bool allowed);
 
     error Unauthorized();
     error TargetNotAllowed();
+    error SelectorNotAllowed();
+    error SpenderNotAllowed();
     error ExecutionFailed();
     error InvalidAddress();
+    error InvalidCalldata();
 
     modifier onlyAgent() {
-        if (msg.sender != AGENT) revert Unauthorized();
+        _onlyAgent();
         _;
     }
 
     modifier onlyAdmin() {
-        if (msg.sender != ADMIN) revert Unauthorized();
+        _onlyAdmin();
         _;
+    }
+
+    function _onlyAgent() internal view {
+        if (msg.sender != AGENT) revert Unauthorized();
+    }
+
+    function _onlyAdmin() internal view {
+        if (msg.sender != ADMIN) revert Unauthorized();
     }
 
     constructor(address agent_, address treasury_, address allowlist_, address admin_) {
@@ -65,6 +83,25 @@ contract AgentExecutor is ReentrancyGuard {
         emit AllowlistEnforcementUpdated(enforced);
     }
 
+    /// @notice Configure selector-level policy for a specific target.
+    function setSelectorAllowed(address target, bytes4 selector, bool allowed) external onlyAdmin {
+        if (target == address(0)) revert InvalidAddress();
+        isSelectorAllowed[target][selector] = allowed;
+        emit SelectorPolicyUpdated(target, selector, allowed);
+    }
+
+    /// @notice Batch version of setSelectorAllowed for operational convenience.
+    function setSelectorsAllowed(address target, bytes4[] calldata selectors, bool allowed)
+        external
+        onlyAdmin
+    {
+        if (target == address(0)) revert InvalidAddress();
+        for (uint256 i; i < selectors.length; ++i) {
+            isSelectorAllowed[target][selectors[i]] = allowed;
+            emit SelectorPolicyUpdated(target, selectors[i], allowed);
+        }
+    }
+
     /// @notice Execute a call from the Safe treasury to an allowlisted target.
     /// @param target   Contract to call. Must be in the ContractAllowlist.
     /// @param value    ETH value forwarded with the call (paid from the Safe balance).
@@ -78,7 +115,7 @@ contract AgentExecutor is ReentrancyGuard {
     {
         if (target == TREASURY || target == address(this) || target == address(ALLOWLIST)) revert TargetNotAllowed();
 
-        if (allowlistEnforced && !ALLOWLIST.isAllowed(target)) revert TargetNotAllowed();
+        if (allowlistEnforced) _enforcePolicy(target, data);
 
         bool success;
         (success, result) = ISafe(TREASURY)
@@ -86,5 +123,44 @@ contract AgentExecutor is ReentrancyGuard {
         if (!success) revert ExecutionFailed();
 
         emit Executed(target, value, data);
+    }
+
+    function _enforcePolicy(address target, bytes calldata data) internal view {
+        if (!ALLOWLIST.isAllowed(target)) revert TargetNotAllowed();
+        bytes4 selector = _selectorFromData(data);
+        if (!isSelectorAllowed[target][selector]) revert SelectorNotAllowed();
+
+        if (_isApprovalSelector(selector)) {
+            address spender = _approvalSpender(selector, data);
+            if (spender == TREASURY || spender == address(this) || spender == address(ALLOWLIST)) {
+                revert SpenderNotAllowed();
+            }
+            if (!ALLOWLIST.isAllowed(spender)) revert SpenderNotAllowed();
+        }
+    }
+
+    function _selectorFromData(bytes calldata data) internal pure returns (bytes4 selector) {
+        if (data.length < 4) return bytes4(0);
+        assembly {
+            selector := calldataload(data.offset)
+        }
+    }
+
+    function _isApprovalSelector(bytes4 selector) internal pure returns (bool) {
+        return selector == APPROVE_SELECTOR || selector == INCREASE_ALLOWANCE_SELECTOR
+            || selector == DECREASE_ALLOWANCE_SELECTOR || selector == SET_APPROVAL_FOR_ALL_SELECTOR;
+    }
+
+    function _approvalSpender(bytes4 selector, bytes calldata data)
+        internal
+        pure
+        returns (address spender)
+    {
+        if (data.length < 68) revert InvalidCalldata();
+        if (selector == SET_APPROVAL_FOR_ALL_SELECTOR) {
+            (spender,) = abi.decode(data[4:], (address, bool));
+            return spender;
+        }
+        (spender,) = abi.decode(data[4:], (address, uint256));
     }
 }

@@ -15,8 +15,12 @@ contract ContractAllowlist {
     error NotAllowed();
 
     modifier onlyAdmin() {
-        if (msg.sender != admin) revert Unauthorized();
+        _onlyAdmin();
         _;
+    }
+
+    function _onlyAdmin() internal view {
+        if (msg.sender != admin) revert Unauthorized();
     }
 
     constructor(address admin_) {
