@@ -14,8 +14,3 @@ uint256 constant DEFAULT_MAX_RAISE = 10_000e18;
 
 /// @dev Default platform fee in basis points (5%).
 uint16 constant DEFAULT_PLATFORM_FEE_BPS = 500;
-
-/// @dev Fixed ERC-4626 share supply minted once at successful finalization.
-uint256 constant TOKEN_FIXED_SUPPLY = 10_000e18;
-
-uint8 constant TOKEN_DECIMALS = 18;

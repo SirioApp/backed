@@ -7,6 +7,7 @@ This repository is the onchain backend for the current raise flow. It does **not
 - create a project from an agent identity
 - raise ERC-20 collateral during a scheduled sale window
 - convert accepted capital into fixed-supply vault shares
+- enforce an investor lockup before vault exits open
 - operate treasury funds through a Safe module constrained by target and selector policy
 
 ## What This System Does
@@ -108,6 +109,8 @@ Important behaviors:
 - `commit(...)` requires project approval and exact collateral transfer behavior
 - `acceptedAmount` is capped at `MAX_RAISE`
 - oversubscription is resolved during `claim()`, not during `commit()`
+- `claim()` transfers vault shares, not underlying collateral
+- `LOCKUP_MINUTES` starts at sale end and blocks `redeem()` / `withdraw()` until the lockup expires
 - the final claimer receives residual accounting to avoid trapped rounding dust
 
 ### `AgentVaultToken`
@@ -124,8 +127,10 @@ Responsibilities:
 
 Important behaviors:
 
+- initial share pricing is bootstrapped at `1:1` against the underlying asset
 - fixed supply is minted only once during bootstrap
 - investor upside comes from asset accretion, not future share minting
+- `LOCKUP_END_TIME` blocks `redeem()` and `withdraw()` until the configured investor lockup has elapsed
 - platform fees are applied during `distributeProfits(...)`, not during initial bootstrap
 
 ### `AgentExecutor`
@@ -227,6 +232,7 @@ createAgentRaise(
     collateral,
     duration,
     launchTime,
+    lockupMinutes,
     tokenName,
     tokenSymbol
 )
@@ -280,6 +286,7 @@ On success:
 - `AgentVaultToken` is deployed
 - accepted collateral is bootstrapped into the vault
 - fixed shares are minted to the sale contract
+- the vault records `LOCKUP_END_TIME = endTime + lockupMinutes`
 
 ### 5. Investor settlement
 
@@ -287,6 +294,12 @@ After finalization:
 
 - success path: investors call `claim()`
 - failure path: investors call `refund()`
+
+After `claim()` on a successful raise:
+
+- investors hold ERC-20 vault shares in their wallet
+- `redeem()` and `withdraw()` stay blocked until `LOCKUP_END_TIME`
+- once the lockup expires, investors can exit against the vault's current asset value
 
 There is also an admin emergency path:
 
@@ -365,10 +378,10 @@ forge test --fuzz-runs 1000 -q
 forge fmt --check
 ```
 
-Based on the current x-ray scan, the repository contains:
+Based on the current test suite, the repository contains:
 
 - `15` test files
-- `136` test functions
+- `140` test functions
 
 What is currently missing from the codebase quality posture:
 

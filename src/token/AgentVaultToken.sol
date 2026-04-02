@@ -4,8 +4,9 @@ pragma solidity 0.8.28;
 import {ERC4626} from "@openzeppelin/contracts/token/ERC20/extensions/ERC4626.sol";
 import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
-import {TOKEN_FIXED_SUPPLY, BPS} from "../Constants.sol";
+import {BPS} from "../Constants.sol";
 
 /// @title AgentVaultToken
 /// @notice ERC-4626 vault token representing fractional ownership of an agent project.
@@ -25,6 +26,8 @@ contract AgentVaultToken is ERC4626 {
     address public immutable TREASURY;
     uint16 public immutable PLATFORM_FEE_BPS;
     address public immutable PLATFORM_FEE_RECIPIENT;
+    uint256 public immutable LOCKUP_END_TIME;
+    uint8 internal immutable _assetDecimals;
 
     bool public bootstrapped;
     bool public saleCompleted;
@@ -43,6 +46,7 @@ contract AgentVaultToken is ERC4626 {
     error OnlyTreasury();
     error SaleAlreadyCompleted();
     error InvalidAssetBehavior();
+    error LockupActive(uint256 lockupEndTime);
 
     /// @param asset_   The underlying ERC-20 collateral token.
     /// @param sale_    The Sale contract authorised to deposit during the raise.
@@ -54,6 +58,7 @@ contract AgentVaultToken is ERC4626 {
         address treasury_,
         uint16 platformFeeBps_,
         address platformFeeRecipient_,
+        uint256 lockupEndTime_,
         string memory name_,
         string memory symbol_
     ) ERC4626(IERC20(asset_)) ERC20(name_, symbol_) {
@@ -67,19 +72,22 @@ contract AgentVaultToken is ERC4626 {
         TREASURY = treasury_;
         PLATFORM_FEE_BPS = platformFeeBps_;
         PLATFORM_FEE_RECIPIENT = platformFeeRecipient_;
+        LOCKUP_END_TIME = lockupEndTime_;
+        _assetDecimals = IERC20Metadata(asset_).decimals();
     }
 
-    /// @notice Bootstrap vault assets and mint fixed supply once.
+    /// @notice Bootstrap vault assets and mint initial shares at a 1:1 asset price.
     function bootstrap(uint256 assets, address receiver) external returns (uint256 shares) {
         if (msg.sender != SALE) revert OnlySale();
         if (bootstrapped) revert AlreadyBootstrapped();
         if (assets == 0 || receiver == address(0)) revert InvalidAmount();
 
+        shares = previewDeposit(assets);
+        if (shares == 0) revert InvalidAmount();
         uint256 balanceBefore = IERC20(asset()).balanceOf(address(this));
         IERC20(asset()).safeTransferFrom(msg.sender, address(this), assets);
         uint256 received = IERC20(asset()).balanceOf(address(this)) - balanceBefore;
         if (received != assets) revert InvalidAssetBehavior();
-        shares = TOKEN_FIXED_SUPPLY;
         _mint(receiver, shares);
         bootstrapped = true;
 
@@ -119,8 +127,42 @@ contract AgentVaultToken is ERC4626 {
         emit ProfitsDistributed(grossAmount, feeAmount, netAmount);
     }
 
-    /// @notice Returns fixed 18 decimals for share tokens.
-    function decimals() public pure override returns (uint8) {
+    function maxWithdraw(address owner) public view override returns (uint256) {
+        if (block.timestamp < LOCKUP_END_TIME) return 0;
+        return super.maxWithdraw(owner);
+    }
+
+    function maxRedeem(address owner) public view override returns (uint256) {
+        if (block.timestamp < LOCKUP_END_TIME) return 0;
+        return super.maxRedeem(owner);
+    }
+
+    function withdraw(uint256 assets, address receiver, address owner)
+        public
+        override
+        returns (uint256)
+    {
+        _revertIfLockupActive();
+        return super.withdraw(assets, receiver, owner);
+    }
+
+    function redeem(uint256 shares, address receiver, address owner)
+        public
+        override
+        returns (uint256)
+    {
+        _revertIfLockupActive();
+        return super.redeem(shares, receiver, owner);
+    }
+
+    /// @notice Backward-compatible alias kept for older integrations.
+    function REDEEM_UNLOCK_TIME() external view returns (uint256) {
+        return LOCKUP_END_TIME;
+    }
+
+    /// @notice Returns fixed 18 decimals for share tokens when collateral is <= 18 decimals.
+    function decimals() public view override returns (uint8) {
+        if (_assetDecimals >= 18) return _assetDecimals;
         return 18;
     }
 
@@ -136,6 +178,14 @@ contract AgentVaultToken is ERC4626 {
         revert MintDisabled();
     }
 
-    // withdraw() and redeem() are inherited without restriction — shareholders
-    // can exit at any time by burning shares in exchange for their collateral share.
+    function _decimalsOffset() internal view override returns (uint8) {
+        if (_assetDecimals >= 18) return 0;
+        return 18 - _assetDecimals;
+    }
+
+    function _revertIfLockupActive() internal view {
+        if (block.timestamp < LOCKUP_END_TIME) {
+            revert LockupActive(LOCKUP_END_TIME);
+        }
+    }
 }

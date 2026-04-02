@@ -5,7 +5,6 @@ import {Test} from "forge-std/Test.sol";
 
 import {AgentVaultToken} from "../../src/token/AgentVaultToken.sol";
 import {MockERC20} from "../mocks/MockERC20.sol";
-import {TOKEN_FIXED_SUPPLY} from "../../src/Constants.sol";
 
 contract AgentVaultTokenTest is Test {
     AgentVaultToken internal vault;
@@ -19,11 +18,20 @@ contract AgentVaultTokenTest is Test {
     address internal attacker = makeAddr("attacker");
 
     uint256 internal constant INITIAL_BALANCE = 1_000_000_000e18;
+    uint256 internal lockupEndTime;
 
     function setUp() public {
         asset = new MockERC20("USDM", "USDM", 18);
+        lockupEndTime = block.timestamp + 1 days;
         vault = new AgentVaultToken(
-            address(asset), sale, treasury, 500, platformFeeRecipient, "Agent Token", "AGT"
+            address(asset),
+            sale,
+            treasury,
+            500,
+            platformFeeRecipient,
+            lockupEndTime,
+            "Agent Token",
+            "AGT"
         );
 
         asset.mint(sale, INITIAL_BALANCE);
@@ -47,9 +55,34 @@ contract AgentVaultTokenTest is Test {
         uint256 shares = vault.bootstrap(amount, sale);
         vm.stopPrank();
 
-        assertEq(shares, TOKEN_FIXED_SUPPLY);
-        assertEq(vault.balanceOf(sale), TOKEN_FIXED_SUPPLY);
+        assertEq(shares, amount);
+        assertEq(vault.balanceOf(sale), amount);
         assertEq(vault.totalAssets(), amount);
+    }
+
+    function test_Bootstrap_UsesOneToOneInitialPriceForSixDecimalAsset() public {
+        MockERC20 sixDecimalAsset = new MockERC20("USDM", "USDM", 6);
+        AgentVaultToken sixDecimalVault = new AgentVaultToken(
+            address(sixDecimalAsset),
+            sale,
+            treasury,
+            500,
+            platformFeeRecipient,
+            lockupEndTime,
+            "Agent Token",
+            "AGT"
+        );
+
+        uint256 amount = 5_000e6;
+        sixDecimalAsset.mint(sale, amount);
+
+        vm.startPrank(sale);
+        sixDecimalAsset.approve(address(sixDecimalVault), amount);
+        uint256 shares = sixDecimalVault.bootstrap(amount, sale);
+        vm.stopPrank();
+
+        assertEq(shares, 5_000e18);
+        assertEq(sixDecimalVault.convertToAssets(1e18), 1e6);
     }
 
     function test_Bootstrap_RevertsNotSale() public {
@@ -116,8 +149,9 @@ contract AgentVaultTokenTest is Test {
         vm.stopPrank();
 
         uint256 balBefore = asset.balanceOf(holder1);
+        vm.warp(lockupEndTime);
         vm.prank(holder1);
-        vault.redeem(TOKEN_FIXED_SUPPLY, holder1, holder1);
+        vault.redeem(amount, holder1, holder1);
         assertEq(asset.balanceOf(holder1), balBefore + amount);
     }
 
@@ -129,13 +163,13 @@ contract AgentVaultTokenTest is Test {
         vault.completeSale();
         vm.stopPrank();
 
-        assertEq(vault.convertToAssets(TOKEN_FIXED_SUPPLY), depositAmount);
+        assertEq(vault.convertToAssets(depositAmount), depositAmount);
 
         // Simulate revenue: direct transfer to vault increases totalAssets()
         uint256 revenue = 1_000e18;
         asset.mint(address(vault), revenue);
 
-        assertGt(vault.convertToAssets(TOKEN_FIXED_SUPPLY), depositAmount);
+        assertGt(vault.convertToAssets(depositAmount), depositAmount);
     }
 
     function test_Bootstrap_RevertsAlreadyBootstrapped() public {
@@ -155,6 +189,33 @@ contract AgentVaultTokenTest is Test {
 
     function test_Decimals() public view {
         assertEq(vault.decimals(), 18);
+    }
+
+    function test_Redeem_RevertsBeforeUnlock() public {
+        uint256 amount = 5_000e18;
+        vm.startPrank(sale);
+        asset.approve(address(vault), amount);
+        vault.bootstrap(amount, holder1);
+        vault.completeSale();
+        vm.stopPrank();
+
+        vm.prank(holder1);
+        vm.expectRevert(
+            abi.encodeWithSelector(AgentVaultToken.LockupActive.selector, lockupEndTime)
+        );
+        vault.redeem(amount, holder1, holder1);
+    }
+
+    function test_MaxRedeem_ZeroBeforeUnlock() public {
+        uint256 amount = 5_000e18;
+        vm.startPrank(sale);
+        asset.approve(address(vault), amount);
+        vault.bootstrap(amount, holder1);
+        vault.completeSale();
+        vm.stopPrank();
+
+        assertEq(vault.maxRedeem(holder1), 0);
+        assertEq(vault.maxWithdraw(holder1), 0);
     }
 
     function test_DistributeProfits_RevertsNotTreasury() public {

@@ -26,12 +26,19 @@ import {BPS} from "../Constants.sol";
 contract Sale is ReentrancyGuard, ISale {
     using SafeERC20 for IERC20;
 
+    struct ClaimPreview {
+        uint256 acceptedCollateral;
+        uint256 payoutShares;
+        uint256 refundAssets;
+    }
+
     IERC20 public immutable COLLATERAL;
     address public immutable TREASURY;
     address public immutable FOUNDER;
     ISaleFactory public immutable FACTORY;
     uint256 public immutable PROJECT_ID;
     uint256 public immutable DURATION;
+    uint256 public immutable LOCKUP_MINUTES;
     uint256 public immutable MIN_RAISE;
     uint256 public immutable MAX_RAISE;
     uint16 public immutable PLATFORM_FEE_BPS;
@@ -60,7 +67,7 @@ contract Sale is ReentrancyGuard, ISale {
 
     event Committed(address indexed user, uint256 amount);
     event Finalized(address indexed token, uint256 accepted, uint256 sharesMinted);
-    event Claimed(address indexed user, uint256 payoutUsdm, uint256 refund);
+    event Claimed(address indexed user, uint256 payoutShares, uint256 refundAssets);
     event Refunded(address indexed user, uint256 amount);
 
     error InvalidAddress();
@@ -94,6 +101,7 @@ contract Sale is ReentrancyGuard, ISale {
         address founder_,
         uint256 duration_,
         uint256 launchTime_,
+        uint256 lockupMinutes_,
         string memory name_,
         string memory symbol_,
         address factory_,
@@ -117,6 +125,7 @@ contract Sale is ReentrancyGuard, ISale {
         FACTORY = ISaleFactory(factory_);
         PROJECT_ID = projectId_;
         DURATION = duration_;
+        LOCKUP_MINUTES = lockupMinutes_;
         MIN_RAISE = saleConfig_.minRaise;
         MAX_RAISE = saleConfig_.maxRaise;
         PLATFORM_FEE_BPS = saleConfig_.platformFeeBps;
@@ -125,6 +134,11 @@ contract Sale is ReentrancyGuard, ISale {
         endTime = launchTime_ + duration_;
         tokenName = name_;
         tokenSymbol = symbol_;
+    }
+
+    /// @notice Backward-compatible alias kept for older integrations.
+    function REDEEM_DELAY_MINUTES() external view returns (uint256) {
+        return LOCKUP_MINUTES;
     }
 
     /// @notice Commit collateral to the sale. Requires project approval and an active sale window.
@@ -178,6 +192,7 @@ contract Sale is ReentrancyGuard, ISale {
             TREASURY,
             PLATFORM_FEE_BPS,
             PLATFORM_FEE_RECIPIENT,
+            endTime + (LOCKUP_MINUTES * 1 minutes),
             tokenName,
             tokenSymbol
         );
@@ -202,43 +217,30 @@ contract Sale is ReentrancyGuard, ISale {
         uint256 committed = commitments[msg.sender];
         if (committed == 0) revert NothingToClaim();
 
+        ClaimPreview memory preview = _getClaimPreview(msg.sender);
         claimed[msg.sender] = true;
 
-        bool isLastClaimer = claimedCount + 1 == participantCount;
-        uint256 accepted;
-        if (isLastClaimer) {
-            accepted = acceptedAmount - totalAcceptedClaimed;
-        } else {
-            accepted = totalCommitted > MAX_RAISE
-                ? (committed * acceptedAmount) / totalCommitted
-                : committed;
-        }
-        if (accepted > committed) accepted = committed;
-
-        uint256 shares = isLastClaimer
-            ? totalSharesMinted - totalSharesClaimed
-            : (accepted * totalSharesMinted) / acceptedAmount;
-        uint256 payoutShares = shares;
-        uint256 refundAmt = committed - accepted;
-        if (payoutShares > 0) {
-            _token.safeTransfer(msg.sender, payoutShares);
+        if (preview.payoutShares > 0) {
+            _token.safeTransfer(msg.sender, preview.payoutShares);
         }
 
-        totalAcceptedClaimed += accepted;
-        totalSharesClaimed += payoutShares;
+        totalAcceptedClaimed += preview.acceptedCollateral;
+        totalSharesClaimed += preview.payoutShares;
         claimedCount += 1;
 
-        if (refundAmt > 0) {
+        if (preview.refundAssets > 0) {
             uint256 overflow = totalCommitted - acceptedAmount;
             uint256 remainingOverflow = overflow - totalRefundedAmount;
-            if (refundAmt > remainingOverflow) refundAmt = remainingOverflow;
-            if (refundAmt > 0) {
-                totalRefundedAmount += refundAmt;
-                COLLATERAL.safeTransfer(msg.sender, refundAmt);
+            uint256 refundAssets = preview.refundAssets;
+            if (refundAssets > remainingOverflow) refundAssets = remainingOverflow;
+            if (refundAssets > 0) {
+                totalRefundedAmount += refundAssets;
+                COLLATERAL.safeTransfer(msg.sender, refundAssets);
+                preview.refundAssets = refundAssets;
             }
         }
 
-        emit Claimed(msg.sender, payoutShares, refundAmt);
+        emit Claimed(msg.sender, preview.payoutShares, preview.refundAssets);
     }
 
     /// @notice Reclaim full collateral commitment when the sale failed.
@@ -271,22 +273,12 @@ contract Sale is ReentrancyGuard, ISale {
         view
         returns (uint256 payoutShares, uint256 refundAmt)
     {
-        if (!finalized || failed || acceptedAmount == 0 || commitments[user] == 0 || claimed[user])
-        {
+        if (!finalized || failed || acceptedAmount == 0 || commitments[user] == 0 || claimed[user]) {
             return (0, 0);
         }
-        uint256 committed = commitments[user];
-        bool isLastClaimer = claimedCount + 1 == participantCount;
-        uint256 accepted = isLastClaimer
-            ? acceptedAmount - totalAcceptedClaimed
-            : (totalCommitted > MAX_RAISE
-                    ? (committed * acceptedAmount) / totalCommitted
-                    : committed);
-        if (accepted > committed) accepted = committed;
-        payoutShares = isLastClaimer
-            ? totalSharesMinted - totalSharesClaimed
-            : (accepted * totalSharesMinted) / acceptedAmount;
-        refundAmt = committed - accepted;
+        ClaimPreview memory preview = _getClaimPreview(user);
+        payoutShares = preview.payoutShares;
+        refundAmt = preview.refundAssets;
         if (refundAmt > 0) {
             uint256 overflow = totalCommitted - acceptedAmount;
             uint256 remainingOverflow = overflow - totalRefundedAmount;
@@ -313,5 +305,26 @@ contract Sale is ReentrancyGuard, ISale {
 
     function getStatus() external view returns (uint256, uint256, bool, bool) {
         return (totalCommitted, acceptedAmount, finalized, failed);
+    }
+
+    function _getClaimPreview(address user) internal view returns (ClaimPreview memory preview) {
+        uint256 committed = commitments[user];
+        bool isLastClaimer = claimedCount + 1 == participantCount;
+        uint256 acceptedCollateral = isLastClaimer
+            ? acceptedAmount - totalAcceptedClaimed
+            : (totalCommitted > MAX_RAISE
+                    ? (committed * acceptedAmount) / totalCommitted
+                    : committed);
+        if (acceptedCollateral > committed) acceptedCollateral = committed;
+
+        uint256 payoutShares = isLastClaimer
+            ? totalSharesMinted - totalSharesClaimed
+            : (acceptedCollateral * totalSharesMinted) / acceptedAmount;
+
+        preview = ClaimPreview({
+            acceptedCollateral: acceptedCollateral,
+            payoutShares: payoutShares,
+            refundAssets: committed - acceptedCollateral
+        });
     }
 }

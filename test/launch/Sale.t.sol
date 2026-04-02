@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.28;
 
-import {Test} from "forge-std/Test.sol";
+import {Test, Vm} from "forge-std/Test.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
 import {Sale} from "../../src/launch/Sale.sol";
 import {ISale} from "../../src/interfaces/ISale.sol";
 import {MockERC20} from "../mocks/MockERC20.sol";
-import {BPS, TOKEN_FIXED_SUPPLY} from "../../src/Constants.sol";
+import {BPS} from "../../src/Constants.sol";
 
 contract MockSaleFactory {
     address public superAdmin;
@@ -81,6 +81,7 @@ contract SaleTest is Test {
             founder,
             SALE_DURATION,
             launchTime,
+            0,
             "Token",
             "TKN",
             address(mockFactory),
@@ -219,6 +220,7 @@ contract SaleTest is Test {
             founder,
             SALE_DURATION,
             block.timestamp + 1 days,
+            0,
             "Token",
             "TKN",
             address(mockFactory),
@@ -361,7 +363,7 @@ contract SaleTest is Test {
         sale.finalize();
 
         assertEq(sale.acceptedAmount(), MAX_RAISE);
-        assertEq(sale.totalSharesMinted(), TOKEN_FIXED_SUPPLY);
+        assertEq(sale.totalSharesMinted(), MAX_RAISE);
     }
 
     function test_Claim_DistributesSharesAndRefundsExcess() public {
@@ -380,12 +382,23 @@ contract SaleTest is Test {
         vm.warp(block.timestamp + SALE_DURATION);
         sale.finalize();
 
+        (uint256 claimableShares, uint256 refundAmt) = sale.getClaimable(user1);
         uint256 user1UsdmBefore = collateral.balanceOf(user1);
+        vm.recordLogs();
         vm.prank(user1);
         sale.claim();
+        Vm.Log[] memory entries = vm.getRecordedLogs();
         uint256 user1Delta = collateral.balanceOf(user1) - user1UsdmBefore;
-        assertGt(user1Delta, 0);
-        assertGt(IERC20(sale.token()).balanceOf(user1), 0);
+        assertEq(user1Delta, refundAmt);
+        assertEq(IERC20(sale.token()).balanceOf(user1), claimableShares);
+
+        bytes32 withdrawTopic =
+            keccak256("Withdraw(address,address,address,uint256,uint256)");
+        for (uint256 i = 0; i < entries.length; ++i) {
+            if (entries[i].emitter == sale.token()) {
+                assertTrue(entries[i].topics[0] != withdrawTopic);
+            }
+        }
     }
 
     function test_Claim_RevertsAlreadyClaimed() public {
@@ -473,6 +486,7 @@ contract SaleTest is Test {
             founder,
             SALE_DURATION,
             launchTime,
+            0,
             "Small",
             "SML",
             address(mockFactory),
@@ -614,6 +628,7 @@ contract SaleFeeOnTransferTest is Test {
             founder,
             SALE_DURATION,
             block.timestamp + 1 days,
+            0,
             "Token",
             "TKN",
             address(mockFactory),
@@ -646,6 +661,7 @@ contract SaleFeeOnTransferTest is Test {
             founder,
             SALE_DURATION,
             block.timestamp + 1 days,
+            0,
             "Token",
             "TKN",
             address(mockFactory),

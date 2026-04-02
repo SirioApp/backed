@@ -211,6 +211,64 @@ contract AgentRaiseFactory {
         string calldata tokenName,
         string calldata tokenSymbol
     ) external returns (uint256 projectId) {
+        return _createAgentRaise(
+            agentId,
+            name,
+            description,
+            categories,
+            agentAddress,
+            collateral,
+            duration,
+            launchTime,
+            0,
+            tokenName,
+            tokenSymbol
+        );
+    }
+
+    /// @notice Create a new agent raise project with a post-raise investor lockup.
+    /// @param lockupMinutes Lockup after the raise ends before shares may be redeemed.
+    function createAgentRaise(
+        uint256 agentId,
+        string calldata name,
+        string calldata description,
+        string calldata categories,
+        address agentAddress,
+        address collateral,
+        uint256 duration,
+        uint256 launchTime,
+        uint256 lockupMinutes,
+        string calldata tokenName,
+        string calldata tokenSymbol
+    ) external returns (uint256 projectId) {
+        return _createAgentRaise(
+            agentId,
+            name,
+            description,
+            categories,
+            agentAddress,
+            collateral,
+            duration,
+            launchTime,
+            lockupMinutes,
+            tokenName,
+            tokenSymbol
+        );
+    }
+
+    function _createAgentRaise(
+        uint256 agentId,
+        string calldata name,
+        string calldata description,
+        string calldata categories,
+        address agentAddress,
+        address collateral,
+        uint256 duration,
+        uint256 launchTime,
+        uint256 lockupMinutes,
+        string calldata tokenName,
+        string calldata tokenSymbol
+    ) internal returns (uint256 projectId) {
         if (IDENTITY_REGISTRY.ownerOf(agentId) != msg.sender) {
             revert NotAgentOwner();
         }
@@ -242,6 +300,7 @@ contract AgentRaiseFactory {
             msg.sender,
             duration,
             launchTime,
+            lockupMinutes,
             tokenName,
             tokenSymbol,
             address(this),

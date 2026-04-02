@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.28;
 
-import {Test} from "forge-std/Test.sol";
+import {Test, Vm} from "forge-std/Test.sol";
 
 import {AgentRaiseFactory} from "../../src/agents/AgentRaiseFactory.sol";
 import {AgentExecutor} from "../../src/agents/AgentExecutor.sol";
@@ -96,7 +96,7 @@ contract AgentRaiseE2ETest is Test {
         sale.commit(2_000e18);
         vm.stopPrank();
 
-        vm.warp(launchTime + SALE_DURATION + 1);
+        vm.warp(sale.endTime() + 1);
         sale.finalize();
 
         address vaultAddr = sale.token();
@@ -131,23 +131,37 @@ contract AgentRaiseE2ETest is Test {
         uint256 user1Before = collateral.balanceOf(investor1);
         uint256 user2Before = collateral.balanceOf(investor2);
 
+        vm.recordLogs();
         vm.prank(investor1);
         sale.claim();
         vm.prank(investor2);
         sale.claim();
+        Vm.Log[] memory entries = vm.getRecordedLogs();
 
         uint256 user1Shares = vault.balanceOf(investor1);
         uint256 user2Shares = vault.balanceOf(investor2);
-        assertEq(user1Shares, 6_000e18);
-        assertEq(user2Shares, 4_000e18);
+        assertEq(user1Shares, 3_000e18);
+        assertEq(user2Shares, 2_000e18);
+        assertEq(collateral.balanceOf(investor1), user1Before);
+        assertEq(collateral.balanceOf(investor2), user2Before);
+
+        bytes32 withdrawTopic =
+            keccak256("Withdraw(address,address,address,uint256,uint256)");
+        for (uint256 i = 0; i < entries.length; ++i) {
+            if (entries[i].emitter == vaultAddr) {
+                assertTrue(entries[i].topics[0] != withdrawTopic);
+            }
+        }
 
         vm.prank(investor1);
         vault.redeem(user1Shares, investor1, investor1);
         vm.prank(investor2);
         vault.redeem(user2Shares, investor2, investor2);
 
-        assertEq(collateral.balanceOf(investor1) - user1Before, 3_570e18);
-        assertEq(collateral.balanceOf(investor2) - user2Before, 2_380e18);
+        uint256 user1Redeemed = collateral.balanceOf(investor1) - user1Before;
+        uint256 user2Redeemed = collateral.balanceOf(investor2) - user2Before;
+        assertLe(_absDiff(user1Redeemed, 3_570e18), 1);
+        assertLe(_absDiff(user2Redeemed, 2_380e18), 1);
         assertEq(collateral.balanceOf(admin) - feeRecipientBefore, 50e18);
     }
 
@@ -258,14 +272,14 @@ contract AgentRaiseE2ETest is Test {
         sale.commit(3_000e18);
         vm.stopPrank();
 
-        vm.warp(launchTime + SALE_DURATION + 1);
+        vm.warp(sale.endTime() + 1);
         sale.finalize();
         AgentVaultToken vault = AgentVaultToken(sale.token());
 
         vm.prank(investor1);
         sale.claim(); // claims shares early
         uint256 user1Shares = vault.balanceOf(investor1);
-        assertEq(user1Shares, 5_000e18);
+        assertEq(user1Shares, 3_000e18);
 
         vm.startPrank(admin);
         allowlist.addContract(address(collateral));
@@ -292,7 +306,7 @@ contract AgentRaiseE2ETest is Test {
         vm.prank(investor2);
         sale.claim(); // claims shares late
         uint256 user2Shares = vault.balanceOf(investor2);
-        assertEq(user2Shares, 5_000e18);
+        assertEq(user2Shares, 3_000e18);
 
         uint256 user1BeforeRedeem = collateral.balanceOf(investor1);
         uint256 user2BeforeRedeem = collateral.balanceOf(investor2);
@@ -301,7 +315,68 @@ contract AgentRaiseE2ETest is Test {
         vm.prank(investor2);
         vault.redeem(user2Shares, investor2, investor2);
 
-        assertEq(collateral.balanceOf(investor1) - user1BeforeRedeem, 3_475e18);
-        assertEq(collateral.balanceOf(investor2) - user2BeforeRedeem, 3_475e18);
+        assertLe(_absDiff(collateral.balanceOf(investor1) - user1BeforeRedeem, 3_475e18), 1);
+        assertLe(_absDiff(collateral.balanceOf(investor2) - user2BeforeRedeem, 3_475e18), 1);
+    }
+
+    function test_E2E_RedemptionLockedUntilLockupEnds() public {
+        uint256 launchTime = block.timestamp + 1 days;
+        uint256 lockupMinutes = 60;
+        vm.prank(agentOwner);
+        uint256 projectId = factory.createAgentRaise(
+            1,
+            "Locked Agent Project",
+            "lockup flow",
+            "defi",
+            agentOperator,
+            address(collateral),
+            SALE_DURATION,
+            launchTime,
+            lockupMinutes,
+            "Locked Vault",
+            "LCK"
+        );
+
+        vm.prank(admin);
+        factory.approveProject(projectId);
+
+        AgentRaiseFactory.AgentProject memory p = factory.getProject(projectId);
+        Sale sale = Sale(p.sale);
+
+        vm.warp(launchTime + 1);
+        vm.startPrank(investor1);
+        collateral.approve(address(sale), 3_000e18);
+        sale.commit(3_000e18);
+        vm.stopPrank();
+
+        vm.warp(sale.endTime() + 1);
+        sale.finalize();
+
+        AgentVaultToken vault = AgentVaultToken(sale.token());
+        assertEq(vault.LOCKUP_END_TIME(), sale.endTime() + (lockupMinutes * 1 minutes));
+        assertGt(vault.LOCKUP_END_TIME(), block.timestamp);
+
+        vm.prank(investor1);
+        sale.claim();
+        uint256 shares = vault.balanceOf(investor1);
+        assertEq(shares, 3_000e18);
+
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                AgentVaultToken.LockupActive.selector, vault.LOCKUP_END_TIME()
+            )
+        );
+        vm.prank(investor1);
+        vault.redeem(shares, investor1, investor1);
+
+        vm.warp(vault.LOCKUP_END_TIME());
+        uint256 beforeRedeem = collateral.balanceOf(investor1);
+        vm.prank(investor1);
+        vault.redeem(shares, investor1, investor1);
+        assertEq(collateral.balanceOf(investor1) - beforeRedeem, 3_000e18);
+    }
+
+    function _absDiff(uint256 a, uint256 b) internal pure returns (uint256) {
+        return a > b ? a - b : b - a;
     }
 }
