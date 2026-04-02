@@ -7,7 +7,7 @@ import {AgentVaultToken} from "../../src/token/AgentVaultToken.sol";
 import {MockERC20} from "../mocks/MockERC20.sol";
 
 contract AgentVaultTokenTest is Test {
-    AgentVaultToken internal vault;
+    AgentVaultToken internal token;
     MockERC20 internal asset;
 
     address internal sale = makeAddr("sale");
@@ -23,233 +23,244 @@ contract AgentVaultTokenTest is Test {
     function setUp() public {
         asset = new MockERC20("USDM", "USDM", 18);
         lockupEndTime = block.timestamp + 1 days;
-        vault = new AgentVaultToken(
+        token = new AgentVaultToken(
             address(asset),
             sale,
             treasury,
             500,
             platformFeeRecipient,
             lockupEndTime,
-            "Agent Token",
-            "AGT"
+            "Agent Fund",
+            "AGF"
         );
 
-        asset.mint(sale, INITIAL_BALANCE);
         asset.mint(treasury, INITIAL_BALANCE);
         asset.mint(holder1, INITIAL_BALANCE);
         asset.mint(holder2, INITIAL_BALANCE);
     }
 
-    function test_OnlySaleCanDeposit() public {
-        vm.startPrank(holder1);
-        asset.approve(address(vault), 1_000e18);
-        vm.expectRevert(AgentVaultToken.DepositDisabled.selector);
-        vault.deposit(1_000e18, holder1);
-        vm.stopPrank();
-    }
-
-    function test_Bootstrap_Success() public {
+    function test_Bootstrap_MintsFixedSupplyWithoutCustody() public {
         uint256 amount = 5_000e18;
-        vm.startPrank(sale);
-        asset.approve(address(vault), amount);
-        uint256 shares = vault.bootstrap(amount, sale);
-        vm.stopPrank();
+
+        vm.prank(sale);
+        uint256 shares = token.bootstrap(amount, sale);
 
         assertEq(shares, amount);
-        assertEq(vault.balanceOf(sale), amount);
-        assertEq(vault.totalAssets(), amount);
+        assertEq(token.balanceOf(sale), amount);
+        assertEq(token.totalSupply(), amount);
+        assertEq(token.totalAssets(), 0);
+        assertEq(asset.balanceOf(address(token)), 0);
     }
 
     function test_Bootstrap_UsesOneToOneInitialPriceForSixDecimalAsset() public {
         MockERC20 sixDecimalAsset = new MockERC20("USDM", "USDM", 6);
-        AgentVaultToken sixDecimalVault = new AgentVaultToken(
+        AgentVaultToken sixDecimalToken = new AgentVaultToken(
             address(sixDecimalAsset),
             sale,
             treasury,
             500,
             platformFeeRecipient,
             lockupEndTime,
-            "Agent Token",
-            "AGT"
+            "Agent Fund",
+            "AGF"
         );
 
-        uint256 amount = 5_000e6;
-        sixDecimalAsset.mint(sale, amount);
-
-        vm.startPrank(sale);
-        sixDecimalAsset.approve(address(sixDecimalVault), amount);
-        uint256 shares = sixDecimalVault.bootstrap(amount, sale);
-        vm.stopPrank();
+        vm.prank(sale);
+        uint256 shares = sixDecimalToken.bootstrap(5_000e6, sale);
 
         assertEq(shares, 5_000e18);
-        assertEq(sixDecimalVault.convertToAssets(1e18), 1e6);
+        assertEq(sixDecimalToken.decimals(), 18);
+        assertEq(sixDecimalToken.convertToAssets(1e18), 0);
     }
 
     function test_Bootstrap_RevertsNotSale() public {
         vm.prank(attacker);
         vm.expectRevert(AgentVaultToken.OnlySale.selector);
-        vault.bootstrap(1_000e18, attacker);
+        token.bootstrap(1_000e18, attacker);
     }
 
     function test_Bootstrap_RevertsInvalidAmount() public {
         vm.startPrank(sale);
         vm.expectRevert(AgentVaultToken.InvalidAmount.selector);
-        vault.bootstrap(0, sale);
+        token.bootstrap(0, sale);
 
         vm.expectRevert(AgentVaultToken.InvalidAmount.selector);
-        vault.bootstrap(1_000e18, address(0));
+        token.bootstrap(1_000e18, address(0));
         vm.stopPrank();
-    }
-
-    function test_MintIsDisabled() public {
-        vm.prank(sale);
-        vm.expectRevert(AgentVaultToken.MintDisabled.selector);
-        vault.mint(1_000e18, sale);
-    }
-
-    function test_CompleteSale_LocksDeposit() public {
-        uint256 amount = 5_000e18;
-        vm.startPrank(sale);
-        asset.approve(address(vault), amount);
-        vault.bootstrap(amount, sale);
-        vault.completeSale();
-        vm.stopPrank();
-
-        assertTrue(vault.saleCompleted());
-
-        vm.startPrank(sale);
-        asset.approve(address(vault), 1_000e18);
-        vm.expectRevert(AgentVaultToken.DepositDisabled.selector);
-        vault.deposit(1_000e18, sale);
-        vm.stopPrank();
-    }
-
-    function test_CompleteSale_RevertsNotSale() public {
-        vm.prank(attacker);
-        vm.expectRevert(AgentVaultToken.OnlySale.selector);
-        vault.completeSale();
-    }
-
-    function test_CompleteSale_RevertsAlreadyCompleted() public {
-        vm.startPrank(sale);
-        asset.approve(address(vault), 1_000e18);
-        vault.bootstrap(1_000e18, sale);
-        vault.completeSale();
-        vm.expectRevert(AgentVaultToken.SaleAlreadyCompleted.selector);
-        vault.completeSale();
-        vm.stopPrank();
-    }
-
-    function test_Redeem_Success() public {
-        uint256 amount = 5_000e18;
-        vm.startPrank(sale);
-        asset.approve(address(vault), amount);
-        vault.bootstrap(amount, holder1);
-        vault.completeSale();
-        vm.stopPrank();
-
-        uint256 balBefore = asset.balanceOf(holder1);
-        vm.warp(lockupEndTime);
-        vm.prank(holder1);
-        vault.redeem(amount, holder1, holder1);
-        assertEq(asset.balanceOf(holder1), balBefore + amount);
-    }
-
-    function test_Revenue_IncreasesSharePrice() public {
-        uint256 depositAmount = 5_000e18;
-        vm.startPrank(sale);
-        asset.approve(address(vault), depositAmount);
-        vault.bootstrap(depositAmount, holder1);
-        vault.completeSale();
-        vm.stopPrank();
-
-        assertEq(vault.convertToAssets(depositAmount), depositAmount);
-
-        // Simulate revenue: direct transfer to vault increases totalAssets()
-        uint256 revenue = 1_000e18;
-        asset.mint(address(vault), revenue);
-
-        assertGt(vault.convertToAssets(depositAmount), depositAmount);
     }
 
     function test_Bootstrap_RevertsAlreadyBootstrapped() public {
         vm.startPrank(sale);
-        asset.approve(address(vault), 2_000e18);
-        vault.bootstrap(1_000e18, sale);
+        token.bootstrap(1_000e18, sale);
         vm.expectRevert(AgentVaultToken.AlreadyBootstrapped.selector);
-        vault.bootstrap(1_000e18, sale);
+        token.bootstrap(1_000e18, sale);
         vm.stopPrank();
     }
 
     function test_CompleteSale_RevertsNotBootstrapped() public {
         vm.prank(sale);
         vm.expectRevert(AgentVaultToken.NotBootstrapped.selector);
-        vault.completeSale();
+        token.completeSale();
     }
 
-    function test_Decimals() public view {
-        assertEq(vault.decimals(), 18);
+    function test_CompleteSale_RevertsNotSale() public {
+        vm.prank(attacker);
+        vm.expectRevert(AgentVaultToken.OnlySale.selector);
+        token.completeSale();
     }
 
-    function test_Redeem_RevertsBeforeUnlock() public {
-        uint256 amount = 5_000e18;
+    function test_CompleteSale_RevertsAlreadyCompleted() public {
         vm.startPrank(sale);
-        asset.approve(address(vault), amount);
-        vault.bootstrap(amount, holder1);
-        vault.completeSale();
+        token.bootstrap(1_000e18, sale);
+        token.completeSale();
+        vm.expectRevert(AgentVaultToken.SaleAlreadyCompleted.selector);
+        token.completeSale();
+        vm.stopPrank();
+    }
+
+    function test_FinalizeSettlement_RevertsBeforeLockupEnds() public {
+        vm.startPrank(sale);
+        token.bootstrap(5_000e18, sale);
+        token.completeSale();
         vm.stopPrank();
 
-        vm.prank(holder1);
+        vm.prank(treasury);
         vm.expectRevert(
             abi.encodeWithSelector(AgentVaultToken.LockupActive.selector, lockupEndTime)
         );
-        vault.redeem(amount, holder1, holder1);
+        token.finalizeSettlement();
     }
 
-    function test_MaxRedeem_ZeroBeforeUnlock() public {
-        uint256 amount = 5_000e18;
+    function test_FinalizeSettlement_RevertsNotTreasury() public {
         vm.startPrank(sale);
-        asset.approve(address(vault), amount);
-        vault.bootstrap(amount, holder1);
-        vault.completeSale();
+        token.bootstrap(5_000e18, sale);
+        token.completeSale();
         vm.stopPrank();
 
-        assertEq(vault.maxRedeem(holder1), 0);
-        assertEq(vault.maxWithdraw(holder1), 0);
-    }
-
-    function test_DistributeProfits_RevertsNotTreasury() public {
+        vm.warp(lockupEndTime);
         vm.prank(attacker);
         vm.expectRevert(AgentVaultToken.OnlyTreasury.selector);
-        vault.distributeProfits(1_000e18);
+        token.finalizeSettlement();
     }
 
-    function test_DistributeProfits_RevertsZeroAmount() public {
-        vm.prank(treasury);
-        vm.expectRevert(AgentVaultToken.InvalidAmount.selector);
-        vault.distributeProfits(0);
-    }
-
-    function test_DistributeProfits_Success_WithFee() public {
-        uint256 amount = 5_000e18;
+    function test_FinalizeSettlement_SettlesAssetsAndChargesFeeOnlyOnProfit() public {
         vm.startPrank(sale);
-        asset.approve(address(vault), amount);
-        vault.bootstrap(amount, holder1);
-        vault.completeSale();
+        token.bootstrap(5_000e18, holder1);
+        token.completeSale();
         vm.stopPrank();
 
-        uint256 gross = 1_000e18;
-        uint256 fee = 50e18;
-        uint256 net = 950e18;
+        asset.mint(address(token), 6_000e18);
+
+        vm.warp(lockupEndTime);
         uint256 feeRecipientBefore = asset.balanceOf(platformFeeRecipient);
-        uint256 vaultAssetsBefore = vault.totalAssets();
+        vm.prank(treasury);
+        token.finalizeSettlement();
 
-        vm.startPrank(treasury);
-        asset.approve(address(vault), gross);
-        vault.distributeProfits(gross);
+        assertTrue(token.settled());
+        assertEq(token.settledShareSupply(), 5_000e18);
+        assertEq(token.totalAssets(), 5_950e18);
+        assertEq(asset.balanceOf(platformFeeRecipient), feeRecipientBefore + 50e18);
+        assertEq(token.convertToAssets(1e18), 1_190_000_000_000_000_000);
+    }
+
+    function test_Redeem_SucceedsAfterSettlement() public {
+        vm.startPrank(sale);
+        token.bootstrap(5_000e18, holder1);
+        token.completeSale();
         vm.stopPrank();
 
-        assertEq(asset.balanceOf(platformFeeRecipient), feeRecipientBefore + fee);
-        assertEq(vault.totalAssets(), vaultAssetsBefore + net);
+        asset.mint(address(token), 5_500e18);
+
+        vm.warp(lockupEndTime);
+        vm.prank(treasury);
+        token.finalizeSettlement();
+
+        uint256 holderBefore = asset.balanceOf(holder1);
+        vm.prank(holder1);
+        uint256 assetsOut = token.redeem(5_000e18, holder1, holder1);
+
+        assertEq(assetsOut, 5_475e18);
+        assertEq(asset.balanceOf(holder1), holderBefore + 5_475e18);
+        assertEq(token.balanceOf(holder1), 0);
+        assertEq(token.totalAssets(), 0);
+    }
+
+    function test_Redeem_RevertsBeforeSettlement() public {
+        vm.startPrank(sale);
+        token.bootstrap(5_000e18, holder1);
+        token.completeSale();
+        vm.stopPrank();
+
+        vm.warp(lockupEndTime);
+        vm.prank(holder1);
+        vm.expectRevert(AgentVaultToken.SettlementNotFinalized.selector);
+        token.redeem(5_000e18, holder1, holder1);
+    }
+
+    function test_Withdraw_UsesCeilSharesAndLeavesNoDustForLastRedeemer() public {
+        AgentVaultToken feeFreeToken = new AgentVaultToken(
+            address(asset),
+            sale,
+            treasury,
+            0,
+            platformFeeRecipient,
+            lockupEndTime,
+            "Fee Free Fund",
+            "FFF"
+        );
+
+        vm.startPrank(sale);
+        feeFreeToken.bootstrap(3_000e18, holder1);
+        feeFreeToken.completeSale();
+        vm.stopPrank();
+
+        vm.prank(holder1);
+        feeFreeToken.transfer(holder2, 1_000e18);
+
+        asset.mint(address(feeFreeToken), 3_333e18);
+
+        vm.warp(lockupEndTime);
+        vm.prank(treasury);
+        feeFreeToken.finalizeSettlement();
+
+        uint256 holder2Before = asset.balanceOf(holder2);
+        vm.prank(holder2);
+        uint256 burnedShares = feeFreeToken.withdraw(1_111e18, holder2, holder2);
+
+        assertEq(burnedShares, 1_000e18);
+        assertEq(asset.balanceOf(holder2), holder2Before + 1_111e18);
+        assertEq(feeFreeToken.balanceOf(holder2), 0);
+        assertEq(feeFreeToken.totalAssets(), 2_222e18);
+
+        uint256 holder1Before = asset.balanceOf(holder1);
+        uint256 holder1Shares = feeFreeToken.balanceOf(holder1);
+        vm.prank(holder1);
+        uint256 redeemedAssets = feeFreeToken.redeem(holder1Shares, holder1, holder1);
+
+        assertEq(redeemedAssets, 2_222e18);
+        assertEq(asset.balanceOf(holder1), holder1Before + 2_222e18);
+        assertEq(feeFreeToken.totalAssets(), 0);
+    }
+
+    function test_MaxRedeemAndMaxWithdraw_AreZeroUntilSettlementOpens() public {
+        vm.startPrank(sale);
+        token.bootstrap(5_000e18, holder1);
+        token.completeSale();
+        vm.stopPrank();
+
+        assertEq(token.maxRedeem(holder1), 0);
+        assertEq(token.maxWithdraw(holder1), 0);
+
+        asset.mint(address(token), 5_000e18);
+        vm.warp(lockupEndTime);
+        vm.prank(treasury);
+        token.finalizeSettlement();
+
+        assertEq(token.maxRedeem(holder1), 5_000e18);
+        assertEq(token.maxWithdraw(holder1), 5_000e18);
+    }
+
+    function test_Decimals() public view {
+        assertEq(token.decimals(), 18);
     }
 }

@@ -176,10 +176,10 @@ contract AgentRaiseFactory {
             maxRaise: DEFAULT_MAX_RAISE,
             platformFeeBps: DEFAULT_PLATFORM_FEE_BPS,
             platformFeeRecipient: admin_,
-            minDuration: 1 hours,
-            maxDuration: 30 days,
+            minDuration: 0,
+            maxDuration: 0,
             minLaunchDelay: 0,
-            maxLaunchDelay: 365 days
+            maxLaunchDelay: 0
         });
         _validateConfig(defaults);
         globalConfig = defaults;
@@ -277,12 +277,7 @@ contract AgentRaiseFactory {
         if (!allowedCollateral[collateral]) revert UnsupportedCollateral();
 
         GlobalConfig memory cfg = globalConfig;
-        if (duration < cfg.minDuration || duration > cfg.maxDuration) revert InvalidDuration();
         if (launchTime < block.timestamp) revert InvalidLaunchTime();
-        uint256 launchDelay = launchTime - block.timestamp;
-        if (launchDelay < cfg.minLaunchDelay || launchDelay > cfg.maxLaunchDelay) {
-            revert InvalidLaunchTime();
-        }
         uint8 collateralDecimals = _collateralDecimals(collateral);
         uint256 scaledMinRaise = _scaleFrom18Decimals(cfg.minRaise, collateralDecimals);
         uint256 scaledMaxRaise = _scaleFrom18Decimals(cfg.maxRaise, collateralDecimals);
@@ -529,10 +524,6 @@ contract AgentRaiseFactory {
         if (config_.maxRaise == 0 || config_.minRaise > config_.maxRaise) revert InvalidConfig();
         if (config_.platformFeeBps >= BPS) revert InvalidConfig();
         if (config_.platformFeeRecipient == address(0)) revert InvalidAddress();
-        if (config_.minDuration == 0 || config_.minDuration > config_.maxDuration) {
-            revert InvalidConfig();
-        }
-        if (config_.minLaunchDelay > config_.maxLaunchDelay) revert InvalidConfig();
     }
 
     function _scaleFrom18Decimals(uint256 amount, uint8 toDecimals)

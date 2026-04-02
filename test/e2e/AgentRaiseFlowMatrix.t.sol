@@ -39,6 +39,7 @@ contract AgentRaiseFlowMatrixTest is Test {
     address internal safeModuleSetup = makeAddr("safeModuleSetup");
 
     uint256 internal constant SALE_DURATION = 3 days;
+    bytes4 internal constant TRANSFER_SELECTOR = bytes4(keccak256("transfer(address,uint256)"));
 
     function setUp() public {
         identityRegistry = new MockIdentityRegistry();
@@ -63,7 +64,7 @@ contract AgentRaiseFlowMatrixTest is Test {
         collateral.mint(investor3, 2_000_000e18);
     }
 
-    function test_Flow_Success_Oversubscribed_Distribute_Claim_Redeem() public {
+    function test_Flow_Success_Oversubscribed_Settle_Claim_Redeem() public {
         (AgentRaiseFactory.AgentProject memory p, uint256 launchTime) =
             _createApprovedProject("success-flow");
         Sale sale = Sale(p.sale);
@@ -79,58 +80,54 @@ contract AgentRaiseFlowMatrixTest is Test {
         assertFalse(sale.failed());
         assertEq(sale.totalCommitted(), 13_000e18);
         assertEq(sale.acceptedAmount(), 10_000e18);
+        assertEq(collateral.balanceOf(p.treasury), 10_000e18);
 
-        AgentVaultToken vault = AgentVaultToken(sale.token());
+        AgentVaultToken shareToken = AgentVaultToken(sale.token());
         vm.startPrank(admin);
         allowlist.addContract(address(collateral));
-        allowlist.addContract(address(vault));
+        allowlist.addContract(address(shareToken));
+        executor.setSelectorAllowed(address(collateral), TRANSFER_SELECTOR, true);
         executor.setSelectorAllowed(
-            address(collateral), bytes4(keccak256("approve(address,uint256)")), true
-        );
-        executor.setSelectorAllowed(
-            address(vault), AgentVaultToken.distributeProfits.selector, true
+            address(shareToken), AgentVaultToken.finalizeSettlement.selector, true
         );
         vm.stopPrank();
 
-        uint256 grossProfit = 1_000e18;
-        collateral.mint(p.treasury, grossProfit);
-        uint256 adminBefore = collateral.balanceOf(admin);
-        bytes memory approveCall =
-            abi.encodeWithSignature("approve(address,uint256)", address(vault), grossProfit);
-        bytes memory distributeCall =
-            abi.encodeWithSelector(AgentVaultToken.distributeProfits.selector, grossProfit);
-        vm.prank(agentOperator);
-        executor.execute(address(collateral), 0, approveCall);
-        vm.prank(agentOperator);
-        executor.execute(address(vault), 0, distributeCall);
+        collateral.mint(p.treasury, 1_000e18);
 
         vm.prank(investor1);
         sale.claim();
         vm.prank(investor2);
         sale.claim();
 
-        uint256 refundTotal = sale.totalRefundedAmount();
-        assertEq(refundTotal, 3_000e18);
-        assertEq(collateral.balanceOf(admin) - adminBefore, 50e18);
+        assertEq(sale.totalRefundedAmount(), 3_000e18);
+        assertEq(shareToken.balanceOf(investor1) + shareToken.balanceOf(investor2), sale.totalSharesMinted());
 
-        uint256 user1Shares = vault.balanceOf(investor1);
-        uint256 user2Shares = vault.balanceOf(investor2);
-        assertEq(user1Shares + user2Shares, sale.totalSharesMinted());
+        vm.warp(shareToken.LOCKUP_END_TIME());
+        vm.prank(agentOperator);
+        executor.execute(
+            address(collateral),
+            0,
+            abi.encodeWithSignature("transfer(address,uint256)", address(shareToken), 11_000e18)
+        );
+        vm.prank(agentOperator);
+        executor.execute(
+            address(shareToken), 0, abi.encodeWithSelector(AgentVaultToken.finalizeSettlement.selector)
+        );
 
-        uint256 user1BeforeRedeem = collateral.balanceOf(investor1);
-        uint256 user2BeforeRedeem = collateral.balanceOf(investor2);
+        uint256 user1Before = collateral.balanceOf(investor1);
+        uint256 user2Before = collateral.balanceOf(investor2);
+        uint256 user1Shares = shareToken.balanceOf(investor1);
+        uint256 user2Shares = shareToken.balanceOf(investor2);
         vm.prank(investor1);
-        vault.redeem(user1Shares, investor1, investor1);
+        uint256 user1Assets = shareToken.redeem(user1Shares, investor1, investor1);
         vm.prank(investor2);
-        vault.redeem(user2Shares, investor2, investor2);
+        uint256 user2Assets = shareToken.redeem(user2Shares, investor2, investor2);
 
-        uint256 redeemedTotal = (collateral.balanceOf(investor1) - user1BeforeRedeem)
-            + (collateral.balanceOf(investor2) - user2BeforeRedeem);
+        uint256 redeemedTotal = user1Assets + user2Assets;
         uint256 expectedRedeemedTotal = 10_950e18;
-        uint256 diff = redeemedTotal > expectedRedeemedTotal
-            ? redeemedTotal - expectedRedeemedTotal
-            : expectedRedeemedTotal - redeemedTotal;
-        assertLe(diff, 1);
+        assertEq(redeemedTotal, expectedRedeemedTotal);
+        assertEq(collateral.balanceOf(investor1), user1Before + user1Assets);
+        assertEq(collateral.balanceOf(investor2), user2Before + user2Assets);
     }
 
     function test_Flow_FailedUnderMinRaise_Finalize_Refund() public {
@@ -256,8 +253,8 @@ contract AgentRaiseFlowMatrixTest is Test {
             address(collateral),
             SALE_DURATION,
             launchTime,
-            "Flow Matrix Vault",
-            "FMV"
+            "Flow Matrix Fund",
+            "FMF"
         );
         vm.prank(admin);
         factory.approveProject(projectId);

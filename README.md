@@ -1,13 +1,14 @@
 # Backed / Sirio Backend Contracts
 
-Smart contracts for the agent raise stack: identity-gated project creation, time-bounded fundraising, fixed-supply vault capitalization, and policy-constrained treasury execution on MegaETH.
+Smart contracts for the agent raise stack: identity-gated project creation, time-bounded fundraising, treasury-operated fund execution, fixed-supply share issuance, and policy-constrained treasury execution on MegaETH.
 
 This repository is the onchain backend for the current raise flow. It does **not** try to be a full governance system or a generic treasury framework. Its scope is narrower and more explicit:
 
 - create a project from an agent identity
 - raise ERC-20 collateral during a scheduled sale window
-- convert accepted capital into fixed-supply vault shares
-- enforce an investor lockup before vault exits open
+- move accepted capital into the project treasury for agent operation
+- mint fixed-supply fund shares to investors
+- enforce a fund term lockup before settlement and redemption open
 - operate treasury funds through a Safe module constrained by target and selector policy
 
 ## What This System Does
@@ -23,7 +24,7 @@ After that:
 1. the platform admin explicitly approves the raise
 2. investors commit collateral during the active window
 3. anyone can finalize once the sale ends
-4. success bootstraps an `AgentVaultToken`
+4. success bootstraps an `AgentVaultToken` and moves accepted capital to the treasury
 5. failure enables refunds
 6. post-raise treasury actions run through the executor under an allowlist and selector policy
 
@@ -60,12 +61,13 @@ flowchart TD
 
     Investor["Investor"] --> Sale
     Collateral["Collateral ERC-20"] --> Sale
-    Sale --> Vault["AgentVaultToken"]
+    Sale --> Shares["AgentVaultToken"]
+    Sale --> Safe
 
     Operator["Agent Operator"] --> Executor
     Executor --> Safe
-    Executor --> Vault
     Executor --> Collateral
+    Safe --> Shares
 ```
 
 ## Core Contracts
@@ -102,6 +104,7 @@ Responsibilities:
 - finalizes permissionlessly after `endTime`
 - resolves success vs failure
 - deploys and bootstraps `AgentVaultToken` on success
+- transfers accepted capital into the treasury on success
 - handles `claim()`, `refund()`, and `emergencyRefund()`
 
 Important behaviors:
@@ -109,8 +112,8 @@ Important behaviors:
 - `commit(...)` requires project approval and exact collateral transfer behavior
 - `acceptedAmount` is capped at `MAX_RAISE`
 - oversubscription is resolved during `claim()`, not during `commit()`
-- `claim()` transfers vault shares, not underlying collateral
-- `LOCKUP_MINUTES` starts at sale end and blocks `redeem()` / `withdraw()` until the lockup expires
+- `claim()` transfers fund shares, not underlying collateral
+- `LOCKUP_MINUTES` starts at sale end and defines when settlement and redemption may open
 - the final claimer receives residual accounting to avoid trapped rounding dust
 
 ### `AgentVaultToken`
@@ -120,18 +123,18 @@ This is the post-raise ownership token.
 
 Responsibilities:
 
-- represents project ownership via fixed-supply ERC-4626 shares
+- represents project ownership via fixed-supply fund shares
 - is bootstrapped once by the sale
-- disables user `deposit()` and `mint()`
-- accepts treasury profit distributions through `distributeProfits(...)`
+- finalizes settlement once the treasury has unwound back into collateral
+- redeems shares into collateral after settlement opens
 
 Important behaviors:
 
 - initial share pricing is bootstrapped at `1:1` against the underlying asset
 - fixed supply is minted only once during bootstrap
-- investor upside comes from asset accretion, not future share minting
-- `LOCKUP_END_TIME` blocks `redeem()` and `withdraw()` until the configured investor lockup has elapsed
-- platform fees are applied during `distributeProfits(...)`, not during initial bootstrap
+- accepted capital stays in the treasury during the fund term, not inside the share token
+- `LOCKUP_END_TIME` marks the earliest time settlement can be finalized and redemptions can open
+- platform fees are applied on positive profit during settlement, not during initial bootstrap
 
 ### `AgentExecutor`
 Path: `src/agents/AgentExecutor.sol`
@@ -284,9 +287,9 @@ On success:
 
 - accepted capital is capped at `MAX_RAISE`
 - `AgentVaultToken` is deployed
-- accepted collateral is bootstrapped into the vault
+- accepted collateral is transferred into the treasury
 - fixed shares are minted to the sale contract
-- the vault records `LOCKUP_END_TIME = endTime + lockupMinutes`
+- the share token records `LOCKUP_END_TIME = endTime + lockupMinutes`
 
 ### 5. Investor settlement
 
@@ -297,9 +300,9 @@ After finalization:
 
 After `claim()` on a successful raise:
 
-- investors hold ERC-20 vault shares in their wallet
+- investors hold ERC-20 fund shares in their wallet
 - `redeem()` and `withdraw()` stay blocked until `LOCKUP_END_TIME`
-- once the lockup expires, investors can exit against the vault's current asset value
+- once the lockup expires and the treasury finalizes settlement, investors can exit against the settled collateral pool
 
 There is also an admin emergency path:
 

@@ -1,26 +1,24 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.28;
 
-import {ERC4626} from "@openzeppelin/contracts/token/ERC20/extensions/ERC4626.sol";
 import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {BPS} from "../Constants.sol";
 
 /// @title AgentVaultToken
-/// @notice ERC-4626 vault token representing fractional ownership of an agent project.
+/// @notice Fixed-supply fund share token for an agent raise.
 ///
-/// Shares are minted exclusively by the Sale contract during the finalization phase.
-/// Once the sale is complete, no new shares can be created; the only way for share
-/// value to increase is through direct collateral transfers to this address, which increases
-/// totalAssets() without diluting supply.
-///
-/// Revenue flow: agent operations generate collateral that accumulates in the Safe treasury.
-/// The agent owner periodically transfers collateral directly to this vault address, increasing
-/// the redemption value of each share.
-contract AgentVaultToken is ERC4626 {
+/// The accepted raise capital lives in the project treasury and is operated through
+/// AgentExecutor. This token only tracks investor ownership during the fund term and,
+/// once the treasury unwinds back into the collateral asset, distributes that asset
+/// pro-rata when settlement is finalized.
+contract AgentVaultToken is ERC20, ReentrancyGuard {
     using SafeERC20 for IERC20;
+
+    IERC20 internal immutable _asset;
 
     address public immutable SALE;
     address public immutable TREASURY;
@@ -29,29 +27,31 @@ contract AgentVaultToken is ERC4626 {
     uint256 public immutable LOCKUP_END_TIME;
     uint8 internal immutable _assetDecimals;
 
+    uint256 public initialAssets;
+    uint256 public settledAssets;
+    uint256 public settledShareSupply;
     bool public bootstrapped;
     bool public saleCompleted;
+    bool public settled;
 
     event Bootstrapped(uint256 assets, uint256 shares);
     event SaleCompleted();
-    event ProfitsDistributed(uint256 grossAmount, uint256 feeAmount, uint256 netAmount);
+    event SettlementFinalized(uint256 grossAssets, uint256 feeAmount, uint256 netAssets);
+    event Redeemed(
+        address indexed caller, address indexed receiver, address indexed owner, uint256 assets, uint256 shares
+    );
 
     error InvalidAddress();
     error InvalidAmount();
     error NotBootstrapped();
     error AlreadyBootstrapped();
-    error DepositDisabled();
-    error MintDisabled();
     error OnlySale();
     error OnlyTreasury();
     error SaleAlreadyCompleted();
-    error InvalidAssetBehavior();
+    error SettlementAlreadyFinalized();
+    error SettlementNotFinalized();
     error LockupActive(uint256 lockupEndTime);
 
-    /// @param asset_   The underlying ERC-20 collateral token.
-    /// @param sale_    The Sale contract authorised to deposit during the raise.
-    /// @param name_    ERC-20 name of the share token.
-    /// @param symbol_  ERC-20 symbol of the share token.
     constructor(
         address asset_,
         address sale_,
@@ -61,13 +61,13 @@ contract AgentVaultToken is ERC4626 {
         uint256 lockupEndTime_,
         string memory name_,
         string memory symbol_
-    ) ERC4626(IERC20(asset_)) ERC20(name_, symbol_) {
-        if (asset_ == address(0) || sale_ == address(0)) {
-            revert InvalidAddress();
-        }
+    ) ERC20(name_, symbol_) {
+        if (asset_ == address(0) || sale_ == address(0)) revert InvalidAddress();
         if (treasury_ == address(0)) revert InvalidAddress();
         if (platformFeeRecipient_ == address(0)) revert InvalidAddress();
         if (platformFeeBps_ >= BPS) revert InvalidAmount();
+
+        _asset = IERC20(asset_);
         SALE = sale_;
         TREASURY = treasury_;
         PLATFORM_FEE_BPS = platformFeeBps_;
@@ -76,25 +76,35 @@ contract AgentVaultToken is ERC4626 {
         _assetDecimals = IERC20Metadata(asset_).decimals();
     }
 
-    /// @notice Bootstrap vault assets and mint initial shares at a 1:1 asset price.
+    function asset() external view returns (address) {
+        return address(_asset);
+    }
+
+    function TERM_END_TIME() external view returns (uint256) {
+        return LOCKUP_END_TIME;
+    }
+
+    /// @notice Backward-compatible alias kept for older integrations.
+    function REDEEM_UNLOCK_TIME() external view returns (uint256) {
+        return LOCKUP_END_TIME;
+    }
+
+    /// @notice Mint the fixed fund share supply at the close of the raise.
     function bootstrap(uint256 assets, address receiver) external returns (uint256 shares) {
         if (msg.sender != SALE) revert OnlySale();
         if (bootstrapped) revert AlreadyBootstrapped();
         if (assets == 0 || receiver == address(0)) revert InvalidAmount();
 
-        shares = previewDeposit(assets);
+        shares = _assetsToShares(assets);
         if (shares == 0) revert InvalidAmount();
-        uint256 balanceBefore = IERC20(asset()).balanceOf(address(this));
-        IERC20(asset()).safeTransferFrom(msg.sender, address(this), assets);
-        uint256 received = IERC20(asset()).balanceOf(address(this)) - balanceBefore;
-        if (received != assets) revert InvalidAssetBehavior();
-        _mint(receiver, shares);
+
         bootstrapped = true;
+        initialAssets = assets;
+        _mint(receiver, shares);
 
         emit Bootstrapped(assets, shares);
     }
 
-    /// @notice Called by the Sale contract after successful bootstrap to lock setup actions.
     function completeSale() external {
         if (msg.sender != SALE) revert OnlySale();
         if (!bootstrapped) revert NotBootstrapped();
@@ -103,89 +113,148 @@ contract AgentVaultToken is ERC4626 {
         emit SaleCompleted();
     }
 
-    /// @notice Distribute profits from the treasury into the vault and take platform fee.
-    ///         Caller must be the treasury (Safe) and must approve this vault to pull funds.
-    function distributeProfits(uint256 grossAmount) external {
+    /// @notice Treasury finalizes settlement after unwinding back into the collateral asset.
+    ///
+    /// The treasury must transfer the final gross asset amount to this contract before
+    /// calling this function. Platform fees, if any, are taken only on positive profits.
+    function finalizeSettlement() external nonReentrant {
         if (msg.sender != TREASURY) revert OnlyTreasury();
-        if (grossAmount == 0) revert InvalidAmount();
-
-        uint256 feeAmount = (grossAmount * PLATFORM_FEE_BPS) / BPS;
-        uint256 netAmount = grossAmount - feeAmount;
-        uint256 vaultBalanceBefore = IERC20(asset()).balanceOf(address(this));
-
-        if (feeAmount > 0) {
-            uint256 recipientBalanceBefore = IERC20(asset()).balanceOf(PLATFORM_FEE_RECIPIENT);
-            IERC20(asset()).safeTransferFrom(msg.sender, PLATFORM_FEE_RECIPIENT, feeAmount);
-            uint256 recipientReceived =
-                IERC20(asset()).balanceOf(PLATFORM_FEE_RECIPIENT) - recipientBalanceBefore;
-            if (recipientReceived != feeAmount) revert InvalidAssetBehavior();
-        }
-        IERC20(asset()).safeTransferFrom(msg.sender, address(this), netAmount);
-        uint256 vaultReceived = IERC20(asset()).balanceOf(address(this)) - vaultBalanceBefore;
-        if (vaultReceived != netAmount) revert InvalidAssetBehavior();
-
-        emit ProfitsDistributed(grossAmount, feeAmount, netAmount);
-    }
-
-    function maxWithdraw(address owner) public view override returns (uint256) {
-        if (block.timestamp < LOCKUP_END_TIME) return 0;
-        return super.maxWithdraw(owner);
-    }
-
-    function maxRedeem(address owner) public view override returns (uint256) {
-        if (block.timestamp < LOCKUP_END_TIME) return 0;
-        return super.maxRedeem(owner);
-    }
-
-    function withdraw(uint256 assets, address receiver, address owner)
-        public
-        override
-        returns (uint256)
-    {
+        if (!saleCompleted) revert NotBootstrapped();
+        if (settled) revert SettlementAlreadyFinalized();
         _revertIfLockupActive();
-        return super.withdraw(assets, receiver, owner);
+
+        uint256 grossAssets = _asset.balanceOf(address(this));
+        uint256 feeAmount;
+        if (grossAssets > initialAssets && PLATFORM_FEE_BPS > 0) {
+            uint256 profit = grossAssets - initialAssets;
+            feeAmount = (profit * PLATFORM_FEE_BPS) / BPS;
+            if (feeAmount > 0) {
+                _asset.safeTransfer(PLATFORM_FEE_RECIPIENT, feeAmount);
+            }
+        }
+
+        settledAssets = grossAssets - feeAmount;
+        settledShareSupply = totalSupply();
+        settled = true;
+
+        emit SettlementFinalized(grossAssets, feeAmount, settledAssets);
+    }
+
+    function totalAssets() public view returns (uint256) {
+        return settled ? settledAssets : 0;
+    }
+
+    function convertToAssets(uint256 shares) public view returns (uint256) {
+        if (!settled || shares == 0) return 0;
+        uint256 supply = totalSupply();
+        if (supply == 0) return 0;
+        if (shares >= supply) return settledAssets;
+        return (shares * settledAssets) / supply;
+    }
+
+    function previewRedeem(uint256 shares) external view returns (uint256) {
+        return convertToAssets(shares);
+    }
+
+    function previewWithdraw(uint256 assets) public view returns (uint256) {
+        if (!settled || assets == 0) return 0;
+        uint256 supply = totalSupply();
+        uint256 assetsAvailable = settledAssets;
+        if (supply == 0 || assetsAvailable == 0) return 0;
+        if (assets >= assetsAvailable) return supply;
+        return _ceilDiv(assets * supply, assetsAvailable);
+    }
+
+    function maxRedeem(address owner) public view returns (uint256) {
+        if (!_redemptionsOpen()) return 0;
+        return balanceOf(owner);
+    }
+
+    function maxWithdraw(address owner) public view returns (uint256) {
+        if (!_redemptionsOpen()) return 0;
+        return convertToAssets(balanceOf(owner));
     }
 
     function redeem(uint256 shares, address receiver, address owner)
         public
-        override
-        returns (uint256)
+        nonReentrant
+        returns (uint256 assets)
     {
-        _revertIfLockupActive();
-        return super.redeem(shares, receiver, owner);
+        _requireRedemptionsOpen();
+        if (shares == 0) revert InvalidAmount();
+
+        if (owner != msg.sender) {
+            _spendAllowance(owner, msg.sender, shares);
+        }
+
+        assets = _previewRedeemForState(shares);
+        _burn(owner, shares);
+
+        if (assets > 0) {
+            settledAssets -= assets;
+            _asset.safeTransfer(receiver, assets);
+        }
+
+        emit Redeemed(msg.sender, receiver, owner, assets, shares);
     }
 
-    /// @notice Backward-compatible alias kept for older integrations.
-    function REDEEM_UNLOCK_TIME() external view returns (uint256) {
-        return LOCKUP_END_TIME;
+    function withdraw(uint256 assets, address receiver, address owner)
+        public
+        nonReentrant
+        returns (uint256 shares)
+    {
+        _requireRedemptionsOpen();
+        if (assets == 0) revert InvalidAmount();
+
+        shares = previewWithdraw(assets);
+        if (shares == 0) revert InvalidAmount();
+
+        if (owner != msg.sender) {
+            _spendAllowance(owner, msg.sender, shares);
+        }
+
+        uint256 payoutAssets = _previewRedeemForState(shares);
+        _burn(owner, shares);
+
+        if (payoutAssets > 0) {
+            settledAssets -= payoutAssets;
+            _asset.safeTransfer(receiver, payoutAssets);
+        }
+
+        emit Redeemed(msg.sender, receiver, owner, payoutAssets, shares);
     }
 
-    /// @notice Returns fixed 18 decimals for share tokens when collateral is <= 18 decimals.
     function decimals() public view override returns (uint8) {
         if (_assetDecimals >= 18) return _assetDecimals;
         return 18;
     }
 
-    // ─── ERC-4626 overrides ──────────────────────────────────────────────
-
-    /// @dev Deposits are disabled to enforce fixed-supply share issuance.
-    function deposit(uint256, address) public pure override returns (uint256) {
-        revert DepositDisabled();
+    function _previewRedeemForState(uint256 shares) internal view returns (uint256) {
+        uint256 supply = totalSupply();
+        if (supply == 0) return 0;
+        if (shares >= supply) return settledAssets;
+        return (shares * settledAssets) / supply;
     }
 
-    /// @dev Mint is disabled; shares are only created via deposit().
-    function mint(uint256, address) public pure override returns (uint256) {
-        revert MintDisabled();
+    function _assetsToShares(uint256 assets) internal view returns (uint256) {
+        if (_assetDecimals >= 18) return assets;
+        return assets * (10 ** (18 - _assetDecimals));
     }
 
-    function _decimalsOffset() internal view override returns (uint8) {
-        if (_assetDecimals >= 18) return 0;
-        return 18 - _assetDecimals;
+    function _redemptionsOpen() internal view returns (bool) {
+        return settled && block.timestamp >= LOCKUP_END_TIME;
+    }
+
+    function _requireRedemptionsOpen() internal view {
+        _revertIfLockupActive();
+        if (!settled) revert SettlementNotFinalized();
     }
 
     function _revertIfLockupActive() internal view {
-        if (block.timestamp < LOCKUP_END_TIME) {
-            revert LockupActive(LOCKUP_END_TIME);
-        }
+        if (block.timestamp < LOCKUP_END_TIME) revert LockupActive(LOCKUP_END_TIME);
+    }
+
+    function _ceilDiv(uint256 a, uint256 b) internal pure returns (uint256) {
+        return a == 0 ? 0 : ((a - 1) / b) + 1;
     }
 }

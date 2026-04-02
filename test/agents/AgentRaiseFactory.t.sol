@@ -370,10 +370,10 @@ contract AgentRaiseFactoryTest is Test {
             maxRaise: 20_000e18,
             platformFeeBps: 250,
             platformFeeRecipient: address(0xBEEF),
-            minDuration: 1 days,
-            maxDuration: 40 days,
-            minLaunchDelay: 1 hours,
-            maxLaunchDelay: 60 days
+            minDuration: 0,
+            maxDuration: 0,
+            minLaunchDelay: 0,
+            maxLaunchDelay: 0
         });
 
         factory.setGlobalConfig(cfg);
@@ -404,10 +404,10 @@ contract AgentRaiseFactoryTest is Test {
             maxRaise: DEFAULT_MAX_RAISE,
             platformFeeBps: 500,
             platformFeeRecipient: address(0xBEEF),
-            minDuration: 1 hours,
-            maxDuration: 30 days,
+            minDuration: 0,
+            maxDuration: 0,
             minLaunchDelay: 0,
-            maxLaunchDelay: 365 days
+            maxLaunchDelay: 0
         });
 
         vm.prank(attacker);
@@ -421,17 +421,17 @@ contract AgentRaiseFactoryTest is Test {
             maxRaise: DEFAULT_MAX_RAISE,
             platformFeeBps: 10_000,
             platformFeeRecipient: address(0xBEEF),
-            minDuration: 1 hours,
-            maxDuration: 30 days,
+            minDuration: 0,
+            maxDuration: 0,
             minLaunchDelay: 0,
-            maxLaunchDelay: 365 days
+            maxLaunchDelay: 0
         });
 
         vm.expectRevert(AgentRaiseFactory.InvalidConfig.selector);
         factory.setGlobalConfig(cfg);
     }
 
-    function test_CreateAgentRaise_RevertsInvalidDurationRange() public {
+    function test_CreateAgentRaise_AllowsAnyPositiveDuration() public {
         AgentRaiseFactory.GlobalConfig memory cfg = AgentRaiseFactory.GlobalConfig({
             minRaise: DEFAULT_MIN_RAISE,
             maxRaise: DEFAULT_MAX_RAISE,
@@ -446,8 +446,7 @@ contract AgentRaiseFactoryTest is Test {
 
         uint256 launchTime = block.timestamp + 1 days;
         vm.prank(agent1);
-        vm.expectRevert(AgentRaiseFactory.InvalidDuration.selector);
-        factory.createAgentRaise(
+        uint256 projectId = factory.createAgentRaise(
             1,
             "Agent Project",
             "Momentum strategy",
@@ -459,9 +458,10 @@ contract AgentRaiseFactoryTest is Test {
             "AgentToken",
             "AGT"
         );
+        assertEq(projectId, 0);
     }
 
-    function test_CreateAgentRaise_RevertsInvalidLaunchDelay() public {
+    function test_CreateAgentRaise_AllowsAnyFutureLaunchDelay() public {
         AgentRaiseFactory.GlobalConfig memory cfg = AgentRaiseFactory.GlobalConfig({
             minRaise: DEFAULT_MIN_RAISE,
             maxRaise: DEFAULT_MAX_RAISE,
@@ -476,8 +476,7 @@ contract AgentRaiseFactoryTest is Test {
 
         uint256 launchTime = block.timestamp + 1 hours;
         vm.prank(agent1);
-        vm.expectRevert(AgentRaiseFactory.InvalidLaunchTime.selector);
-        factory.createAgentRaise(
+        uint256 projectId = factory.createAgentRaise(
             1,
             "Agent Project",
             "Momentum strategy",
@@ -489,6 +488,7 @@ contract AgentRaiseFactoryTest is Test {
             "AgentToken",
             "AGT"
         );
+        assertEq(projectId, 0);
     }
 
     function test_CreateAgentRaise_RevertsLaunchTimeInPast() public {

@@ -14,11 +14,11 @@ import {BPS} from "../Constants.sol";
 /// Investors commit collateral during the sale window. At finalization (callable by anyone
 /// after the window closes), the contract:
 ///   1. Caps accepted collateral at MAX_RAISE.
-///   2. Deploys an AgentVaultToken (ERC-4626) and deposits the accepted proceeds into it,
-///      receiving all shares back to this contract.
-///   4. Locks the vault against further deposits.
+///   2. Deploys an AgentVaultToken as the fixed-supply fund share token.
+///   3. Transfers the accepted proceeds into the project treasury for agent operation.
+///   4. Receives all initial shares back to this contract for investor claims.
 ///
-/// Investors then call claim() to receive their pro-rata share of vault tokens,
+/// Investors then call claim() to receive their pro-rata share of fund share tokens,
 /// plus a collateral refund for any over-committed amount.
 ///
 /// If no funds were committed, or an admin triggers emergencyRefund(), investors
@@ -167,7 +167,8 @@ contract Sale is ReentrancyGuard, ISale {
     /// @notice Finalise the sale. Callable by anyone after the sale window closes.
     ///
     /// Accepts up to MAX_RAISE collateral units. Any excess above MAX_RAISE remains in this
-    /// contract for pro-rata refunds.
+    /// contract for pro-rata refunds. Accepted capital is moved into the treasury, not the
+    /// share token contract.
     function finalize() external nonReentrant {
         if (block.timestamp < endTime) revert NotReady();
         if (finalized) revert AlreadyFinalized();
@@ -186,7 +187,7 @@ contract Sale is ReentrancyGuard, ISale {
             return;
         }
 
-        AgentVaultToken vault = new AgentVaultToken(
+        AgentVaultToken shareToken = new AgentVaultToken(
             address(COLLATERAL),
             address(this),
             TREASURY,
@@ -196,20 +197,20 @@ contract Sale is ReentrancyGuard, ISale {
             tokenName,
             tokenSymbol
         );
-        _token = IERC20(address(vault));
+        _token = IERC20(address(shareToken));
 
-        COLLATERAL.forceApprove(address(vault), acceptedAmount);
-        uint256 shares = vault.bootstrap(acceptedAmount, address(this));
+        uint256 shares = shareToken.bootstrap(acceptedAmount, address(this));
         totalSharesMinted = shares;
 
-        vault.completeSale();
+        COLLATERAL.safeTransfer(TREASURY, acceptedAmount);
+        shareToken.completeSale();
 
-        emit Finalized(address(vault), acceptedAmount, shares);
+        emit Finalized(address(shareToken), acceptedAmount, shares);
     }
 
-    /// @notice Claim pro-rata vault shares after successful finalization.
+    /// @notice Claim pro-rata fund shares after successful finalization.
     ///
-    /// Each investor receives transfer of pro-rata vault shares and any overflow refund.
+    /// Each investor receives transfer of pro-rata fund shares and any overflow refund.
     function claim() external nonReentrant {
         if (!finalized || failed || acceptedAmount == 0) revert NotReady();
         if (claimed[msg.sender]) revert AlreadyClaimed();
