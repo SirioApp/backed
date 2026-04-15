@@ -48,23 +48,11 @@ Deploys:
 - `ContractAllowlist`
 - `AgentRaiseFactory`
 
-### Mainnet factory refresh
+### Mainnet factory stack
 
 ```bash
 cd backend
 NO_PROXY="*" forge script script/DeployNewAgentRaiseFactory.s.sol:DeployNewAgentRaiseFactory \
-  --rpc-url megaeth-mainnet \
-  --broadcast \
-  --gas-estimate-multiplier 5000 \
-  --code-size-limit 100000 \
-  -vvv
-```
-
-### Mainnet DEX registry
-
-```bash
-cd backend
-NO_PROXY="*" forge script script/DeployDexRegistry.s.sol:DeployDexRegistry \
   --rpc-url megaeth-mainnet \
   --broadcast \
   --gas-estimate-multiplier 5000 \

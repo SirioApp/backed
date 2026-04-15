@@ -177,11 +177,6 @@ Path: `src/safe/SafeModuleSetup.sol`
 
 This is a helper used during Safe initialization to enable modules.
 
-### `DexRegistry`
-Path: `src/registry/DexRegistry.sol`
-
-This is an auxiliary admin registry for DEX endpoint metadata. It is not part of the critical raise lifecycle.
-
 ## Roles
 
 ### Project Creator
@@ -359,7 +354,6 @@ Current scripts:
 
 - `script/DeployFactoryStackTestnet.s.sol`
 - `script/DeployNewAgentRaiseFactory.s.sol`
-- `script/DeployDexRegistry.s.sol`
 - `script/DeployTestnetStackAndRaise.s.sol`
 - `script/RegisterAgent.s.sol`
 
@@ -423,7 +417,7 @@ NO_PROXY="*" forge script script/DeployFactoryStackTestnet.s.sol:DeployFactorySt
   -vvv
 ```
 
-Refresh mainnet factory:
+Redeploy mainnet raise stack:
 
 ```bash
 cd backend
