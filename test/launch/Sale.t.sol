@@ -392,8 +392,7 @@ contract SaleTest is Test {
         assertEq(user1Delta, refundAmt);
         assertEq(IERC20(sale.token()).balanceOf(user1), claimableShares);
 
-        bytes32 withdrawTopic =
-            keccak256("Withdraw(address,address,address,uint256,uint256)");
+        bytes32 withdrawTopic = keccak256("Withdraw(address,address,address,uint256,uint256)");
         for (uint256 i = 0; i < entries.length; ++i) {
             if (entries[i].emitter == sale.token()) {
                 assertTrue(entries[i].topics[0] != withdrawTopic);

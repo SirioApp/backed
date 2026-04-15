@@ -100,7 +100,10 @@ contract AgentRaiseFlowMatrixTest is Test {
         sale.claim();
 
         assertEq(sale.totalRefundedAmount(), 3_000e18);
-        assertEq(shareToken.balanceOf(investor1) + shareToken.balanceOf(investor2), sale.totalSharesMinted());
+        assertEq(
+            shareToken.balanceOf(investor1) + shareToken.balanceOf(investor2),
+            sale.totalSharesMinted()
+        );
 
         vm.warp(shareToken.LOCKUP_END_TIME());
         vm.prank(agentOperator);
@@ -111,7 +114,9 @@ contract AgentRaiseFlowMatrixTest is Test {
         );
         vm.prank(agentOperator);
         executor.execute(
-            address(shareToken), 0, abi.encodeWithSelector(AgentVaultToken.finalizeSettlement.selector)
+            address(shareToken),
+            0,
+            abi.encodeWithSelector(AgentVaultToken.finalizeSettlement.selector)
         );
 
         uint256 user1Before = collateral.balanceOf(investor1);

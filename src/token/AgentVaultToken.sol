@@ -38,7 +38,11 @@ contract AgentVaultToken is ERC20, ReentrancyGuard {
     event SaleCompleted();
     event SettlementFinalized(uint256 grossAssets, uint256 feeAmount, uint256 netAssets);
     event Redeemed(
-        address indexed caller, address indexed receiver, address indexed owner, uint256 assets, uint256 shares
+        address indexed caller,
+        address indexed receiver,
+        address indexed owner,
+        uint256 assets,
+        uint256 shares
     );
 
     error InvalidAddress();
@@ -62,7 +66,9 @@ contract AgentVaultToken is ERC20, ReentrancyGuard {
         string memory name_,
         string memory symbol_
     ) ERC20(name_, symbol_) {
-        if (asset_ == address(0) || sale_ == address(0)) revert InvalidAddress();
+        if (asset_ == address(0) || sale_ == address(0)) {
+            revert InvalidAddress();
+        }
         if (treasury_ == address(0)) revert InvalidAddress();
         if (platformFeeRecipient_ == address(0)) revert InvalidAddress();
         if (platformFeeBps_ >= BPS) revert InvalidAmount();

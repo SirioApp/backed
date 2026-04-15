@@ -299,7 +299,9 @@ contract AgentRaiseE2ETest is Test {
         );
         vm.prank(agentOperator);
         executor.execute(
-            address(shareToken), 0, abi.encodeWithSelector(AgentVaultToken.finalizeSettlement.selector)
+            address(shareToken),
+            0,
+            abi.encodeWithSelector(AgentVaultToken.finalizeSettlement.selector)
         );
 
         uint256 user1Before = collateral.balanceOf(investor1);
@@ -384,7 +386,9 @@ contract AgentRaiseE2ETest is Test {
         );
         vm.prank(agentOperator);
         executor.execute(
-            address(shareToken), 0, abi.encodeWithSelector(AgentVaultToken.finalizeSettlement.selector)
+            address(shareToken),
+            0,
+            abi.encodeWithSelector(AgentVaultToken.finalizeSettlement.selector)
         );
 
         uint256 before = collateral.balanceOf(investor1);

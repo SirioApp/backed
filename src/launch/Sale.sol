@@ -274,7 +274,8 @@ contract Sale is ReentrancyGuard, ISale {
         view
         returns (uint256 payoutShares, uint256 refundAmt)
     {
-        if (!finalized || failed || acceptedAmount == 0 || commitments[user] == 0 || claimed[user]) {
+        if (!finalized || failed || acceptedAmount == 0 || commitments[user] == 0 || claimed[user])
+        {
             return (0, 0);
         }
         ClaimPreview memory preview = _getClaimPreview(user);

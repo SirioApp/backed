@@ -1,4 +1,4 @@
-# Backed / Sirio Backend Contracts
+# Backed Backend Contracts
 
 Smart contracts for the agent raise stack: identity-gated project creation, time-bounded fundraising, treasury-operated fund execution, fixed-supply share issuance, and policy-constrained treasury execution on MegaETH.
 
@@ -9,7 +9,7 @@ This repository is the onchain backend for the current raise flow. It does **not
 - move accepted capital into the project treasury for agent operation
 - mint fixed-supply fund shares to investors
 - enforce a fund term lockup before settlement and redemption open
-- operate treasury funds through a Safe module constrained by target and selector policy
+- support policy-constrained treasury execution through an `AgentExecutor` Safe module
 
 ## What This System Does
 
@@ -26,7 +26,7 @@ After that:
 3. anyone can finalize once the sale ends
 4. success bootstraps an `AgentVaultToken` and moves accepted capital to the treasury
 5. failure enables refunds
-6. post-raise treasury actions run through the executor under an allowlist and selector policy
+6. post-raise treasury actions can be routed through the executor under an allowlist and selector policy
 
 The design intentionally separates:
 
@@ -35,7 +35,7 @@ The design intentionally separates:
 - investor settlement
 - treasury operation
 
-That separation is one of the main safety properties of the stack.
+That separation is one of the main structural properties of the stack.
 
 ## Stack
 
@@ -139,13 +139,13 @@ Important behaviors:
 ### `AgentExecutor`
 Path: `src/agents/AgentExecutor.sol`
 
-This is the treasury execution boundary.
+This is the policy-constrained treasury execution module.
 
 Responsibilities:
 
 - acts as a Safe module
-- allows only the immutable `AGENT` address to trigger execution
-- enforces policy on targets, selectors, and approval recipients
+- allows only the immutable `AGENT` address to trigger execution through the module path
+- enforces policy on targets, selectors, and approval recipients for module-originated calls
 
 Important behaviors:
 
@@ -154,6 +154,7 @@ Important behaviors:
 - when `allowlistEnforced == true`, both target and selector must be approved
 - approval-like selectors also require the spender or operator to be allowlisted
 - when `allowlistEnforced == false`, all those checks are bypassed except the three hard-blocked targets
+- the contract constrains the module path only; treasury owner powers still depend on the Safe configuration used at deployment
 
 ### `ContractAllowlist`
 Path: `src/registry/ContractAllowlist.sol`
@@ -247,8 +248,8 @@ The factory checks:
 - non-empty `name`
 - non-zero `agentAddress`
 - supported collateral
-- valid duration
-- valid launch timing
+- `duration > 0`
+- `launchTime >= block.timestamp`
 - valid scaled min/max raise after applying collateral decimals
 
 ### 2. Atomic deployment
@@ -313,8 +314,9 @@ There is also an admin emergency path:
 After successful finalization:
 
 - admin configures target and selector policy
-- operator calls `AgentExecutor.execute(...)`
-- Safe funds move only through the module path
+- operator can call `AgentExecutor.execute(...)`
+- executor-enforced policy applies to calls routed through the module path
+- direct treasury owner actions remain governed by the deployed Safe configuration
 
 ## Security Model
 
@@ -325,13 +327,13 @@ This system is not trustless. It is a constrained-authority design.
 - the identity registry is trusted as the source of creation authority
 - the admin is trusted for raise admission, emergency controls, and treasury policy configuration
 - the operator is trusted to use approved treasury actions correctly
-- the Safe deployment and module wiring must be correct
+- the Safe deployment, owner configuration, and module wiring must be correct
 
 ### Main control points
 
 - strict caller checks on privileged functions
 - reentrancy protection on `Sale` and `AgentExecutor` state-changing entry points
-- hard-blocked treasury self-targeting in `AgentExecutor`
+- hard-blocked treasury self-targeting inside the module path
 - exact-transfer checks for collateral-sensitive flows
 - bounded oversubscription refund accounting
 
@@ -339,6 +341,7 @@ This system is not trustless. It is a constrained-authority design.
 
 - `Sale` accounting and settlement logic
 - executor break-glass mode via `setAllowlistEnforced(false)`
+- gaps between Safe owner powers and module-level policy assumptions
 - privileged operations with no in-code timelock
 - assumptions about collateral token behavior
 
@@ -348,7 +351,6 @@ This system is not trustless. It is a constrained-authority design.
 - `test/` unit and end-to-end tests
 - `script/` deployment and operational scripts
 - `docs/` supporting operational documentation
-- `deployments/` deployment artifacts
 - `x-ray/` generated audit-readiness and architecture outputs
 
 ## Key Scripts
@@ -384,7 +386,7 @@ forge fmt --check
 Based on the current test suite, the repository contains:
 
 - `15` test files
-- `140` test functions
+- `137` test functions
 
 What is currently missing from the codebase quality posture:
 
@@ -479,8 +481,8 @@ Most integrations only need a small subset of methods.
 
 - caller is not the current owner of `agentId`
 - unsupported collateral
-- invalid duration
-- invalid launch time
+- zero `duration`
+- zero or past `launchTime`
 - invalid scaled min/max config after decimal conversion
 
 ### Common commitment failures
