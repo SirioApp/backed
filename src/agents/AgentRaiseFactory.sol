@@ -297,27 +297,28 @@ contract AgentRaiseFactory {
 
         address treasury = _createSafe(msg.sender, projectId);
 
-        address sale = ISaleDeployer(SALE_DEPLOYER).deploySale(
-            collateral,
-            treasury,
-            msg.sender,
-            duration,
-            launchTime,
-            lockupMinutes,
-            tokenName,
-            tokenSymbol,
-            address(this),
-            ISale.SaleConfigSnapshot({
-                minRaise: scaledMinRaise,
-                maxRaise: scaledMaxRaise,
-                platformFeeBps: cfg.platformFeeBps,
-                platformFeeRecipient: cfg.platformFeeRecipient
-            }),
-            projectId
-        );
+        address sale = ISaleDeployer(SALE_DEPLOYER)
+            .deploySale(
+                collateral,
+                treasury,
+                msg.sender,
+                duration,
+                launchTime,
+                lockupMinutes,
+                tokenName,
+                tokenSymbol,
+                address(this),
+                ISale.SaleConfigSnapshot({
+                    minRaise: scaledMinRaise,
+                    maxRaise: scaledMaxRaise,
+                    platformFeeBps: cfg.platformFeeBps,
+                    platformFeeRecipient: cfg.platformFeeRecipient
+                }),
+                projectId
+            );
 
-        address executor =
-            IAgentExecutorDeployer(EXECUTOR_DEPLOYER).deployExecutor(agentAddress, treasury, ALLOWLIST, ADMIN);
+        address executor = IAgentExecutorDeployer(EXECUTOR_DEPLOYER)
+            .deployExecutor(agentAddress, treasury, ALLOWLIST, ADMIN);
 
         _setupSafeModules(ISafe(treasury), executor);
 
@@ -342,14 +343,7 @@ contract AgentRaiseFactory {
         _agentProjects[agentId].push(projectId);
 
         emit AgentRaiseCreated(
-            projectId,
-            agentId,
-            name,
-            msg.sender,
-            treasury,
-            sale,
-            executor,
-            collateral
+            projectId, agentId, name, msg.sender, treasury, sale, executor, collateral
         );
     }
 
