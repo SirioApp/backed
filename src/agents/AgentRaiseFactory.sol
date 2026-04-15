@@ -1,8 +1,12 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.28;
 
-import {Sale} from "../launch/Sale.sol";
-import {AgentExecutor} from "./AgentExecutor.sol";
+import {
+    ISaleDeployer,
+    IAgentExecutorDeployer,
+    SaleDeployer,
+    AgentExecutorDeployer
+} from "./AgentDeploymentHelpers.sol";
 import {ISale} from "../interfaces/ISale.sol";
 import {IERC8004IdentityRegistry} from "../interfaces/IERC8004IdentityRegistry.sol";
 import {ISafe, ISafeProxyFactory, ISafeSetup, ISafeModuleSetup} from "../interfaces/ISafe.sol";
@@ -35,6 +39,8 @@ contract AgentRaiseFactory {
     address public immutable SAFE_MODULE_SETUP;
     address public immutable ADMIN;
     address public immutable ALLOWLIST;
+    address internal immutable SALE_DEPLOYER;
+    address internal immutable EXECUTOR_DEPLOYER;
 
     struct GlobalConfig {
         uint256 minRaise;
@@ -169,6 +175,8 @@ contract AgentRaiseFactory {
         SAFE_MODULE_SETUP = safeModuleSetup_;
         ADMIN = admin_;
         ALLOWLIST = allowlist_;
+        SALE_DEPLOYER = address(new SaleDeployer());
+        EXECUTOR_DEPLOYER = address(new AgentExecutorDeployer());
         _setCollateral(initialCollateral_, true);
 
         GlobalConfig memory defaults = GlobalConfig({
@@ -289,7 +297,7 @@ contract AgentRaiseFactory {
 
         address treasury = _createSafe(msg.sender, projectId);
 
-        Sale sale = new Sale(
+        address sale = ISaleDeployer(SALE_DEPLOYER).deploySale(
             collateral,
             treasury,
             msg.sender,
@@ -308,9 +316,10 @@ contract AgentRaiseFactory {
             projectId
         );
 
-        AgentExecutor executor = new AgentExecutor(agentAddress, treasury, ALLOWLIST, ADMIN);
+        address executor =
+            IAgentExecutorDeployer(EXECUTOR_DEPLOYER).deployExecutor(agentAddress, treasury, ALLOWLIST, ADMIN);
 
-        _setupSafeModules(ISafe(treasury), address(executor));
+        _setupSafeModules(ISafe(treasury), executor);
 
         _projects.push(
             AgentProject({
@@ -320,8 +329,8 @@ contract AgentRaiseFactory {
                 categories: categories,
                 agent: msg.sender,
                 treasury: treasury,
-                sale: address(sale),
-                agentExecutor: address(executor),
+                sale: sale,
+                agentExecutor: executor,
                 collateral: collateral,
                 operationalStatus: STATUS_RAISING,
                 statusNote: "Raise created",
@@ -338,8 +347,8 @@ contract AgentRaiseFactory {
             name,
             msg.sender,
             treasury,
-            address(sale),
-            address(executor),
+            sale,
+            executor,
             collateral
         );
     }
