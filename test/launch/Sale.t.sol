@@ -568,6 +568,91 @@ contract SaleTest is Test {
         sale.refund();
         assertEq(sale.getRefundable(user1), 0);
     }
+
+    function testFuzz_ClaimingAlwaysCapsOverflowRefunds(
+        uint96 aRaw,
+        uint96 bRaw,
+        uint96 cRaw,
+        uint8 claimOrderSeed
+    ) public {
+        uint256 launchTime = block.timestamp + 1 days;
+        Sale fuzzSale = new Sale(
+            address(collateral),
+            treasury,
+            founder,
+            SALE_DURATION,
+            launchTime,
+            0,
+            "Fuzz",
+            "FZ",
+            address(mockFactory),
+            ISale.SaleConfigSnapshot({
+                minRaise: 1e18,
+                maxRaise: 10_000e18,
+                platformFeeBps: FEE_BPS,
+                platformFeeRecipient: feeRecipient
+            }),
+            11
+        );
+        mockFactory.setProjectApproved(11, true);
+
+        uint256 a = bound(uint256(aRaw), 1e18, 8_000e18);
+        uint256 b = bound(uint256(bRaw), 1e18, 8_000e18);
+        uint256 c = bound(uint256(cRaw), 1e18, 8_000e18);
+
+        vm.warp(launchTime + 1);
+        vm.startPrank(user1);
+        collateral.approve(address(fuzzSale), a);
+        fuzzSale.commit(a);
+        vm.stopPrank();
+
+        vm.startPrank(user2);
+        collateral.approve(address(fuzzSale), b);
+        fuzzSale.commit(b);
+        vm.stopPrank();
+
+        vm.startPrank(user3);
+        collateral.approve(address(fuzzSale), c);
+        fuzzSale.commit(c);
+        vm.stopPrank();
+
+        vm.warp(launchTime + SALE_DURATION + 1);
+        fuzzSale.finalize();
+        if (fuzzSale.failed()) return;
+
+        address[3] memory order = [user1, user2, user3];
+        if (claimOrderSeed % 2 == 1) (order[0], order[1]) = (order[1], order[0]);
+        if (claimOrderSeed % 3 == 2) (order[1], order[2]) = (order[2], order[1]);
+
+        vm.prank(order[0]);
+        fuzzSale.claim();
+        vm.prank(order[1]);
+        fuzzSale.claim();
+        vm.prank(order[2]);
+        fuzzSale.claim();
+
+        uint256 overflow = fuzzSale.totalCommitted() - fuzzSale.acceptedAmount();
+        assertEq(fuzzSale.totalRefundedAmount(), overflow);
+    }
+
+    function testFuzz_RefundsReturnExactCommittedAmount(uint96 amountRaw) public {
+        uint256 launchTime = block.timestamp + 1 days;
+        uint256 amount = bound(uint256(amountRaw), 1e18, 2_000e18);
+
+        vm.warp(launchTime + 1);
+        vm.startPrank(user1);
+        collateral.approve(address(sale), amount);
+        sale.commit(amount);
+        vm.stopPrank();
+
+        vm.prank(admin);
+        sale.emergencyRefund();
+
+        uint256 beforeRefund = collateral.balanceOf(user1);
+        vm.prank(user1);
+        sale.refund();
+        assertEq(collateral.balanceOf(user1), beforeRefund + amount);
+    }
 }
 
 contract FeeOnTransferERC20 is MockERC20 {

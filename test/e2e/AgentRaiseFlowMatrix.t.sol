@@ -180,6 +180,35 @@ contract AgentRaiseFlowMatrixTest is Test {
         assertEq(collateral.balanceOf(investor2), user2Before + 800e18);
     }
 
+    function test_Flow_RevokeDuringCommitment_BlocksNewCommits_ButFinalizeAndRefundWork() public {
+        (AgentRaiseFactory.AgentProject memory p, uint256 launchTime) =
+            _createApprovedProject("revoke-during-commitment");
+        Sale sale = Sale(p.sale);
+
+        vm.warp(launchTime + 1);
+        _commit(investor1, sale, 1_000e18);
+
+        vm.prank(admin);
+        factory.revokeProject(0);
+        assertFalse(factory.isProjectApproved(0));
+
+        vm.startPrank(investor2);
+        collateral.approve(address(sale), 1_000e18);
+        vm.expectRevert(Sale.NotApproved.selector);
+        sale.commit(1_000e18);
+        vm.stopPrank();
+
+        vm.warp(launchTime + SALE_DURATION + 1);
+        sale.finalize();
+        assertTrue(sale.finalized());
+        assertTrue(sale.failed());
+
+        uint256 beforeRefund = collateral.balanceOf(investor1);
+        vm.prank(investor1);
+        sale.refund();
+        assertEq(collateral.balanceOf(investor1), beforeRefund + 1_000e18);
+    }
+
     function test_Flow_AllowlistToggle_Path() public {
         (AgentRaiseFactory.AgentProject memory p,) = _createApprovedProject("allowlist-toggle");
         AgentExecutor executor = AgentExecutor(p.agentExecutor);
