@@ -163,6 +163,42 @@ contract AgentVaultTokenTest is Test {
         assertEq(token.convertToAssets(1e18), 1_190_000_000_000_000_000);
     }
 
+    function test_FinalizeSettlement_ChargesTeamFeeAndDistributesNetAssetsWithRoundNumbers()
+        public
+    {
+        vm.startPrank(sale);
+        token.bootstrap(1_000e18, holder1);
+        token.completeSale();
+        vm.stopPrank();
+
+        vm.prank(holder1);
+        token.transfer(holder2, 400e18);
+
+        asset.mint(address(token), 1_200e18);
+
+        vm.warp(lockupEndTime);
+        vm.prank(treasury);
+        token.finalizeSettlement();
+
+        assertTrue(token.settled());
+        assertEq(asset.balanceOf(platformFeeRecipient), 10e18);
+        assertEq(token.totalAssets(), 1_190e18);
+
+        uint256 holder1Before = asset.balanceOf(holder1);
+        uint256 holder2Before = asset.balanceOf(holder2);
+
+        vm.prank(holder1);
+        uint256 holder1Assets = token.redeem(600e18, holder1, holder1);
+        vm.prank(holder2);
+        uint256 holder2Assets = token.redeem(400e18, holder2, holder2);
+
+        assertEq(holder1Assets, 714e18);
+        assertEq(holder2Assets, 476e18);
+        assertEq(asset.balanceOf(holder1), holder1Before + 714e18);
+        assertEq(asset.balanceOf(holder2), holder2Before + 476e18);
+        assertEq(token.totalAssets(), 0);
+    }
+
     function test_Redeem_SucceedsAfterSettlement() public {
         vm.startPrank(sale);
         token.bootstrap(5_000e18, holder1);

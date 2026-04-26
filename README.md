@@ -403,6 +403,32 @@ Defined in `foundry.toml`:
 - `megaeth-testnet = https://carrot.megaeth.com/rpc`
 - `megaeth-mainnet = https://mainnet.megaeth.com/rpc`
 
+### Official deployed addresses
+
+Source of truth:
+
+- [frontend/config/deployment.testnet.json](/Users/lucatropea/Desktop/Backed/app/frontend/config/deployment.testnet.json:1)
+- [frontend/config/deployment.mainnet.json](/Users/lucatropea/Desktop/Backed/app/frontend/config/deployment.mainnet.json:1)
+
+Backend mirrors:
+
+- [backend/deployments/megaeth-testnet.json](/Users/lucatropea/Desktop/Backed/app/backend/deployments/megaeth-testnet.json:1)
+- [backend/deployments/megaeth-mainnet.json](/Users/lucatropea/Desktop/Backed/app/backend/deployments/megaeth-mainnet.json:1)
+
+Testnet:
+
+- `SafeModuleSetup`: `0x7b6EbB0ede8ac0224a176663e6c07Dece0a37010`
+- `ContractAllowlist`: `0x54459A9431bD98c754180DEB32B067Cf31bDfF33`
+- `AgentRaiseFactory`: `0x577be362178d20A3370722807d0294fA5D8A5a2A`
+- `USDM`: `0x9f5A17BD53310D012544966b8e3cF7863fc8F05f`
+
+Mainnet:
+
+- `SafeModuleSetup`: `0x54459A9431bD98c754180DEB32B067Cf31bDfF33`
+- `ContractAllowlist`: `0x577be362178d20A3370722807d0294fA5D8A5a2A`
+- `AgentRaiseFactory`: `0x45179eE92887e5770E42CD239644bc7b662673af`
+- `USDM`: `0xFAfDdbb3FC7688494971a79cc65DCa3EF82079E7`
+
 ### Common deployment commands
 
 Deploy testnet factory stack:
